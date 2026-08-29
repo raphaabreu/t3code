@@ -619,11 +619,22 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           );
         }
         const persistedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        const persistedInstanceId = persistedBinding?.providerInstanceId;
+        const persistedContinuationIsCompatible =
+          persistedInstanceId === resolvedInstanceId ||
+          (persistedInstanceId !== undefined &&
+            (yield* registry.getInstanceInfo(persistedInstanceId).pipe(
+              Effect.map(
+                (persistedInstanceInfo) =>
+                  persistedInstanceInfo.driverKind === instanceInfo.driverKind &&
+                  persistedInstanceInfo.continuationIdentity.continuationKey ===
+                    instanceInfo.continuationIdentity.continuationKey,
+              ),
+              Effect.orElseSucceed(() => false),
+            )));
         const effectiveResumeCursor =
           input.resumeCursor ??
-          (persistedBinding?.providerInstanceId === resolvedInstanceId
-            ? persistedBinding.resumeCursor
-            : undefined);
+          (persistedContinuationIsCompatible ? persistedBinding?.resumeCursor : undefined);
         const effectiveCwd =
           input.cwd ??
           (persistedBinding?.providerInstanceId === resolvedInstanceId
@@ -634,8 +645,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.resume_cursor.source":
             input.resumeCursor !== undefined
               ? "request"
-              : effectiveResumeCursor !== undefined &&
-                  persistedBinding?.providerInstanceId === resolvedInstanceId
+              : effectiveResumeCursor !== undefined && persistedContinuationIsCompatible
                 ? "persisted"
                 : "none",
           "provider.resume_cursor.present": effectiveResumeCursor !== undefined,

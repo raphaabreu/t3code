@@ -75,6 +75,8 @@ const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const codexInstanceId = ProviderInstanceId.make("codex");
 const claudeAgentInstanceId = ProviderInstanceId.make("claudeAgent");
+const claudeWorkInstanceId = ProviderInstanceId.make("claude_work");
+const claudeIsolatedInstanceId = ProviderInstanceId.make("claude_isolated");
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
@@ -287,12 +289,60 @@ const hasMetricSnapshot = (
 function makeProviderServiceLayer() {
   const codex = makeFakeCodexAdapter();
   const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+  const claudeWork = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+  const claudeIsolated = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
   const cursor = makeFakeCodexAdapter(CURSOR_DRIVER);
-  const registry = makeAdapterRegistryMock({
+  const registryBase = makeAdapterRegistryMock({
     [ProviderDriverKind.make("codex")]: codex.adapter,
     [ProviderDriverKind.make("claudeAgent")]: claude.adapter,
     [ProviderDriverKind.make("cursor")]: cursor.adapter,
   });
+  const registry: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"] = {
+    ...registryBase,
+    getByInstance: (instanceId) =>
+      instanceId === claudeWorkInstanceId
+        ? Effect.succeed(claudeWork.adapter)
+        : instanceId === claudeIsolatedInstanceId
+          ? Effect.succeed(claudeIsolated.adapter)
+          : registryBase.getByInstance(instanceId),
+    getInstanceInfo: (instanceId) => {
+      if (instanceId === claudeAgentInstanceId || instanceId === claudeWorkInstanceId) {
+        return Effect.succeed({
+          instanceId,
+          driverKind: CLAUDE_AGENT_DRIVER,
+          displayName: undefined,
+          enabled: true,
+          continuationIdentity: {
+            driverKind: CLAUDE_AGENT_DRIVER,
+            continuationKey: "claude:home:/shared-claude",
+          },
+        });
+      }
+      if (instanceId === claudeIsolatedInstanceId) {
+        return Effect.succeed({
+          instanceId,
+          driverKind: CLAUDE_AGENT_DRIVER,
+          displayName: undefined,
+          enabled: true,
+          continuationIdentity: {
+            driverKind: CLAUDE_AGENT_DRIVER,
+            continuationKey: "claude:home:/isolated-claude",
+          },
+        });
+      }
+      return registryBase.getInstanceInfo(instanceId);
+    },
+    listInstances: () =>
+      registryBase
+        .listInstances()
+        .pipe(
+          Effect.map((instanceIds) => [
+            ...instanceIds,
+            claudeWorkInstanceId,
+            claudeIsolatedInstanceId,
+          ]),
+        ),
+  };
 
   const providerAdapterLayer = Layer.succeed(
     ProviderAdapterRegistry.ProviderAdapterRegistry,
@@ -328,6 +378,8 @@ function makeProviderServiceLayer() {
   return {
     codex,
     claude,
+    claudeWork,
+    claudeIsolated,
     cursor,
     layer,
   };
@@ -1296,6 +1348,78 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.providerInstanceId, claudeAgentInstanceId);
         assert.equal(startPayload.cwd, "/tmp/project-claude");
       }
+    }),
+  );
+
+  it.effect("resumes a stopped session on a compatible provider instance", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-compatible-stopped-switch");
+      const initial = yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId,
+        cwd: "/tmp/project-compatible-stopped-switch",
+        runtimeMode: "full-access",
+      });
+
+      yield* provider.stopSession({ threadId });
+      routing.claudeWork.startSession.mockClear();
+
+      yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeWorkInstanceId,
+        threadId,
+        cwd: "/tmp/project-compatible-stopped-switch",
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(routing.claudeWork.startSession.mock.calls.length, 1);
+      const resumedStartInput = routing.claudeWork.startSession.mock.calls[0]?.[0];
+      assert.equal(typeof resumedStartInput === "object" && resumedStartInput !== null, true);
+      if (resumedStartInput && typeof resumedStartInput === "object") {
+        const startPayload = resumedStartInput as {
+          providerInstanceId?: ProviderInstanceId;
+          resumeCursor?: unknown;
+        };
+        assert.equal(startPayload.providerInstanceId, claudeWorkInstanceId);
+        assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
+      }
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("does not resume a stopped session on an incompatible provider instance", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-incompatible-stopped-switch");
+      yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId,
+        cwd: "/tmp/project-incompatible-stopped-switch",
+        runtimeMode: "full-access",
+      });
+
+      yield* provider.stopSession({ threadId });
+      routing.claudeIsolated.startSession.mockClear();
+
+      yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeIsolatedInstanceId,
+        threadId,
+        cwd: "/tmp/project-incompatible-stopped-switch",
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(routing.claudeIsolated.startSession.mock.calls.length, 1);
+      const freshStartInput = routing.claudeIsolated.startSession.mock.calls[0]?.[0];
+      assert.equal(typeof freshStartInput === "object" && freshStartInput !== null, true);
+      if (freshStartInput && typeof freshStartInput === "object") {
+        const startPayload = freshStartInput as { resumeCursor?: unknown };
+        assert.equal(startPayload.resumeCursor, undefined);
+      }
+      yield* provider.stopSession({ threadId });
     }),
   );
 
