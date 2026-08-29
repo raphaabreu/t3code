@@ -1708,6 +1708,51 @@ describe("composerDraftStore modelSelection", () => {
     ).toEqual(modelSelection(CODEX_DRIVER, "gpt-5.4"));
   });
 
+  it("keeps automatic credential mode when the picker updates draft and sticky state", () => {
+    const store = useComposerDraftStore.getState();
+    const automaticSelection: ModelSelection = {
+      ...modelSelection(CODEX_DRIVER, "gpt-5.4"),
+      credentialMode: "automatic",
+    };
+
+    store.setModelSelection(threadRef, automaticSelection, { explicit: true });
+    store.setStickyModelSelection(automaticSelection);
+
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+    ).toEqual(automaticSelection);
+    expect(useComposerDraftStore.getState().stickyModelSelectionByProvider[CODEX_INSTANCE]).toEqual(
+      automaticSelection,
+    );
+
+    store.setProviderModelOptions(
+      threadRef,
+      CODEX_DRIVER,
+      toSelections({ reasoningEffort: "xhigh" }),
+      { persistSticky: true },
+    );
+
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+    ).toMatchObject({ credentialMode: "automatic" });
+    expect(
+      useComposerDraftStore.getState().stickyModelSelectionByProvider[CODEX_INSTANCE],
+    ).toMatchObject({ credentialMode: "automatic" });
+
+    const fixedSelection = modelSelection(CODEX_DRIVER, "gpt-5.4", {
+      reasoningEffort: "xhigh",
+    });
+    store.setModelSelection(threadRef, fixedSelection, { explicit: true });
+    store.setStickyModelSelection(fixedSelection);
+
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+    ).not.toHaveProperty("credentialMode");
+    expect(
+      useComposerDraftStore.getState().stickyModelSelectionByProvider[CODEX_INSTANCE],
+    ).not.toHaveProperty("credentialMode");
+  });
+
   it("marks picker writes explicit and seeding writes non-explicit", () => {
     const store = useComposerDraftStore.getState();
     store.setModelSelection(threadRef, modelSelection(CODEX_DRIVER, "gpt-5.4"));

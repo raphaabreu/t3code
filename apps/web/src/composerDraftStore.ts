@@ -669,6 +669,13 @@ function compactModelSelectionByProvider(
   return Object.fromEntries(entries) as DeepMutable<Record<ProviderInstanceId, ModelSelection>>;
 }
 
+function withAutomaticCredentialMode<T extends ModelSelection>(
+  selection: T,
+  credentialMode: unknown,
+): T {
+  return credentialMode === "automatic" ? { ...selection, credentialMode: "automatic" } : selection;
+}
+
 const EMPTY_PERSISTED_DRAFT_STORE_STATE = Object.freeze<PersistedComposerDraftStoreState>({
   draftsByThreadKey: {},
   draftThreadsByThreadKey: {},
@@ -967,7 +974,10 @@ function normalizeModelSelection(
   }
   if (Array.isArray(candidate?.options)) {
     const selections = coerceProviderOptionSelections(candidate.options);
-    return createModelSelection(instanceId, model, selections) as NormalizedModelSelection;
+    return withAutomaticCredentialMode(
+      createModelSelection(instanceId, model, selections),
+      candidate?.credentialMode,
+    ) as NormalizedModelSelection;
   }
   // Per-kind options were a pre-migration concern; only recover them for a
   // built-in-kind instance. Custom instances don't have a legacy options
@@ -981,7 +991,10 @@ function normalizeModelSelection(
       )
     : null;
   const options = kindForLegacyOptions ? modelOptions?.[kindForLegacyOptions] : undefined;
-  return createModelSelection(instanceId, model, options) as NormalizedModelSelection;
+  return withAutomaticCredentialMode(
+    createModelSelection(instanceId, model, options),
+    candidate?.credentialMode,
+  ) as NormalizedModelSelection;
 }
 
 type NormalizedModelSelection = Omit<ModelSelection, "instanceId"> & {
@@ -1004,10 +1017,9 @@ function legacySyncModelSelectionOptions(
   }
   const kind = normalizeProviderDriverKind(modelSelection.instanceId);
   const options = kind ? modelOptions?.[kind] : undefined;
-  return createModelSelection(
-    modelSelection.instanceId,
-    modelSelection.model,
-    options,
+  return withAutomaticCredentialMode(
+    createModelSelection(modelSelection.instanceId, modelSelection.model, options),
+    modelSelection.credentialMode,
   ) as NormalizedModelSelection;
 }
 
@@ -2855,10 +2867,9 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 nextMap[normalized.instanceId] = normalized as ModelSelection;
               } else {
                 // No options in selection → preserve existing options, update provider+model
-                nextMap[normalized.instanceId] = createModelSelection(
-                  normalized.instanceId,
-                  normalized.model,
-                  current?.options,
+                nextMap[normalized.instanceId] = withAutomaticCredentialMode(
+                  createModelSelection(normalized.instanceId, normalized.model, current?.options),
+                  normalized.credentialMode,
                 );
               }
             }
@@ -2908,10 +2919,13 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               const instanceKey = defaultInstanceIdForDriver(driverKind);
               const current = nextMap[instanceKey];
               if (opts && opts.length > 0) {
-                nextMap[instanceKey] = createModelSelection(
-                  instanceKey,
-                  current?.model ?? DEFAULT_MODEL_BY_PROVIDER[driverKind] ?? DEFAULT_MODEL,
-                  opts,
+                nextMap[instanceKey] = withAutomaticCredentialMode(
+                  createModelSelection(
+                    instanceKey,
+                    current?.model ?? DEFAULT_MODEL_BY_PROVIDER[driverKind] ?? DEFAULT_MODEL,
+                    opts,
+                  ),
+                  current?.credentialMode,
                 );
               } else if (current?.options) {
                 const { options: _, ...rest } = current;
@@ -2959,10 +2973,13 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextMap = { ...base.modelSelectionByProvider };
             const currentForProvider = nextMap[instanceKey];
             if (providerOpts) {
-              nextMap[instanceKey] = createModelSelection(
-                instanceKey,
-                currentForProvider?.model ?? fallbackModel,
-                providerOpts,
+              nextMap[instanceKey] = withAutomaticCredentialMode(
+                createModelSelection(
+                  instanceKey,
+                  currentForProvider?.model ?? fallbackModel,
+                  providerOpts,
+                ),
+                currentForProvider?.credentialMode,
               );
             } else if (currentForProvider && (currentForProvider.options?.length ?? 0) > 0) {
               const { options: _, ...rest } = currentForProvider;
@@ -2979,10 +2996,9 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
                 base.modelSelectionByProvider[instanceKey] ??
                 createModelSelection(instanceKey, fallbackModel);
               if (providerOpts) {
-                nextStickyMap[instanceKey] = createModelSelection(
-                  instanceKey,
-                  stickyBase.model,
-                  providerOpts,
+                nextStickyMap[instanceKey] = withAutomaticCredentialMode(
+                  createModelSelection(instanceKey, stickyBase.model, providerOpts),
+                  stickyBase.credentialMode,
                 );
               } else if ((stickyBase.options?.length ?? 0) > 0) {
                 const { options: _, ...rest } = stickyBase;
