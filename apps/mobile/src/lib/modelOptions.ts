@@ -56,6 +56,7 @@ function normalizeSelectionOptions(
     : {
         instanceId: selection.instanceId,
         model: selection.model,
+        ...(selection.credentialMode ? { credentialMode: selection.credentialMode } : {}),
       };
 }
 

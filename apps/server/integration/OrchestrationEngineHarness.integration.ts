@@ -59,6 +59,7 @@ import { ProviderCommandReactorLive } from "../src/orchestration/Layers/Provider
 import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
 import { CheckpointReactor } from "../src/orchestration/Services/CheckpointReactor.ts";
 import { ProviderRuntimeIngestionService } from "../src/orchestration/Services/ProviderRuntimeIngestion.ts";
+import { AutomaticCredentialSelector } from "../src/orchestration/Services/AutomaticCredentialSelector.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -317,9 +318,20 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(ThreadPlanProgress.layer),
     );
     const serverSettingsLayer = ServerSettingsService.layerTest();
+    const automaticCredentialSelectorLayer = Layer.succeed(AutomaticCredentialSelector, {
+      resolve: ({ selection, currentInstanceId }) =>
+        Effect.succeed(
+          selection.credentialMode === "automatic" && currentInstanceId
+            ? { ...selection, instanceId: currentInstanceId }
+            : selection,
+        ),
+      markUnavailable: () => Effect.void,
+      isUnavailable: () => Effect.succeed(false),
+    });
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
       Layer.provideMerge(runtimeServicesLayer),
       Layer.provideMerge(serverSettingsLayer),
+      Layer.provide(automaticCredentialSelectorLayer),
     );
     const gitWorkflowLayer = Layer.mock(GitWorkflowService)({
       renameBranch: (input: {
@@ -337,6 +349,7 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(gitWorkflowLayer),
       Layer.provideMerge(textGenerationLayer),
       Layer.provideMerge(serverSettingsLayer),
+      Layer.provide(automaticCredentialSelectorLayer),
     );
     const checkpointReactorLayer = CheckpointReactorLive.pipe(
       Layer.provideMerge(runtimeServicesLayer),

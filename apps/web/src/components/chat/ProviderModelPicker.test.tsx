@@ -29,6 +29,7 @@ function renderPicker(input: {
   model: string;
   options: ReadonlyArray<ModelEsque>;
   includeEntry?: boolean;
+  credentialMode?: "automatic";
 }) {
   const instanceId = ProviderInstanceId.make(input.instanceId);
   const entry = providerEntry(input.instanceId, input.driver);
@@ -39,6 +40,7 @@ function renderPicker(input: {
       lockedProvider={null}
       instanceEntries={input.includeEntry === false ? [] : [entry]}
       modelOptionsByInstance={new Map([[instanceId, input.options]])}
+      credentialMode={input.credentialMode}
       onInstanceModelChange={() => {}}
     />,
   );
@@ -98,5 +100,17 @@ describe("ProviderModelPicker", () => {
 
     expect(markup).toContain("Fallback model");
     expect(markup).not.toContain(">missing-model<");
+  });
+
+  it("shows when automatic credential failover is enabled", () => {
+    const markup = renderPicker({
+      instanceId: "codex_work",
+      driver: "codex",
+      model: "gpt-5.4",
+      options: [{ slug: "gpt-5.4", name: "GPT-5.4" }],
+      credentialMode: "automatic",
+    });
+
+    expect(markup).toContain(">Auto<");
   });
 });

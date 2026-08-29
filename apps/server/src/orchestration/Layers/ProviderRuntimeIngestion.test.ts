@@ -47,10 +47,15 @@ import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
-import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import {
+  ProviderRuntimeIngestionLive,
+  isExplicitUsageLimitMessage,
+  usageLimitSignalFromRuntimeEvent,
+} from "./ProviderRuntimeIngestion.ts";
 import { DEFAULT_THREAD_TITLE } from "../threadTitles.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
+import { AutomaticCredentialSelector } from "../Services/AutomaticCredentialSelector.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -252,6 +257,13 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
+      Layer.provideMerge(
+        Layer.succeed(AutomaticCredentialSelector, {
+          resolve: ({ selection }) => Effect.succeed(selection),
+          markUnavailable: () => Effect.void,
+          isUnavailable: () => Effect.succeed(false),
+        }),
+      ),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -326,6 +338,153 @@ describe("ProviderRuntimeIngestion", () => {
       drain,
     };
   }
+
+  it("classifies only terminal usage-limit signals", () => {
+    expect(isExplicitUsageLimitMessage("429: usage limit reached")).toBe(true);
+    expect(isExplicitUsageLimitMessage("connection reset by peer")).toBe(false);
+    expect(
+      usageLimitSignalFromRuntimeEvent({
+        type: "account.rate-limits.updated",
+        eventId: asEventId("evt-rate-warning"),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: ProviderInstanceId.make("ccp_one"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: {
+          rateLimits: { rate_limit_info: { status: "allowed_warning", utilization: 0.96 } },
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      usageLimitSignalFromRuntimeEvent({
+        type: "account.rate-limits.updated",
+        eventId: asEventId("evt-rate-rejected"),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: ProviderInstanceId.make("ccp_one"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: {
+          rateLimits: {
+            rate_limit_info: { status: "rejected", resetsAt: 1_767_225_600 },
+          },
+        },
+      }),
+    ).toEqual({
+      instanceId: "ccp_one",
+      retryAt: 1_767_225_600_000,
+    });
+  });
+
+  it("requests one continuation after a confirmed limit in automatic mode", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.dispatch({
+      type: "thread.meta.update",
+      commandId: CommandId.make("cmd-enable-automatic-credentials"),
+      threadId: asThreadId("thread-1"),
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+        credentialMode: "automatic",
+      },
+    });
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-original-turn"),
+      threadId: asThreadId("thread-1"),
+      message: {
+        messageId: asMessageId("message-original"),
+        role: "user",
+        text: "Implement the requested change",
+        attachments: [],
+      },
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+        credentialMode: "automatic",
+      },
+      runtimeMode: "approval-required",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      createdAt: now,
+    });
+
+    harness.emit({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("evt-codex-limit"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-1"),
+      payload: {
+        rateLimits: { rateLimitReachedType: "workspace_member_usage_limit_reached" },
+      },
+    });
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("evt-codex-limit-error"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-1"),
+      payload: { message: "Usage limit reached" },
+    });
+    await harness.drain();
+
+    const beforeCompletion = await harness.readModel();
+    expect(
+      beforeCompletion.threads[0]?.messages.filter((message) => message.role === "user"),
+    ).toHaveLength(1);
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-codex-limit-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-1"),
+      payload: { state: "failed", errorMessage: "Usage limit reached" },
+    });
+    await harness.drain();
+
+    const snapshot = await harness.readModel();
+    const thread = snapshot.threads.find((entry) => entry.id === "thread-1");
+    const userMessages = thread?.messages.filter((message) => message.role === "user") ?? [];
+    expect(userMessages).toHaveLength(2);
+    const continuation = userMessages.find((message) =>
+      message.text.startsWith("[Automatic credential failover]"),
+    );
+    expect(continuation?.text).toContain("Implement the requested change");
+  });
+
+  it("does not fail over automatic credentials for an ordinary runtime error", async () => {
+    const harness = await createHarness();
+    await harness.dispatch({
+      type: "thread.meta.update",
+      commandId: CommandId.make("cmd-enable-automatic-no-limit"),
+      threadId: asThreadId("thread-1"),
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+        credentialMode: "automatic",
+      },
+    });
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("evt-network-error"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: { message: "connection reset by peer" },
+    });
+    await harness.drain();
+    const snapshot = await harness.readModel();
+    const thread = snapshot.threads.find((entry) => entry.id === "thread-1");
+    expect(thread?.messages).toHaveLength(0);
+  });
 
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();

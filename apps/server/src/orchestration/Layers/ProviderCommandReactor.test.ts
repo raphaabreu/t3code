@@ -58,6 +58,10 @@ import {
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import {
+  AutomaticCredentialSelector,
+  type AutomaticCredentialSelectorShape,
+} from "../Services/AutomaticCredentialSelector.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -155,6 +159,7 @@ describe("ProviderCommandReactor", () => {
     readonly startSessionEffect?: (
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderAdapterRequestError>;
+    readonly automaticCredentialResolve?: AutomaticCredentialSelectorShape["resolve"];
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -399,6 +404,15 @@ describe("ProviderCommandReactor", () => {
         } satisfies OrchestrationEngineService["Service"];
       }),
     ).pipe(Layer.provide(orchestrationLayer));
+    const automaticCredentialResolve = vi.fn(
+      input?.automaticCredentialResolve ??
+        (({ selection, currentInstanceId }) =>
+          Effect.succeed(
+            selection.credentialMode === "automatic" && currentInstanceId
+              ? { ...selection, instanceId: currentInstanceId }
+              : selection,
+          )),
+    );
     const layer = ProviderCommandReactorLive.pipe(
       Layer.provideMerge(reactorOrchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
@@ -427,6 +441,13 @@ describe("ProviderCommandReactor", () => {
         }),
       ),
       Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(
+        Layer.succeed(AutomaticCredentialSelector, {
+          resolve: automaticCredentialResolve,
+          markUnavailable: () => Effect.void,
+          isUnavailable: () => Effect.succeed(false),
+        }),
+      ),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -519,6 +540,7 @@ describe("ProviderCommandReactor", () => {
       generateBranchName,
       generateThreadTitle,
       runtimeSessions,
+      automaticCredentialResolve,
       stateDir,
       drain,
       runEffect,
@@ -566,6 +588,51 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.status).toBe("starting");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+  });
+
+  it("keeps the automatically selected credential sticky across normal turns", async () => {
+    const automaticSelection: ModelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex",
+      credentialMode: "automatic",
+    };
+    const selectedInstanceId = ProviderInstanceId.make("codex_personal");
+    const harness = await createHarness({
+      threadModelSelection: automaticSelection,
+      automaticCredentialResolve: ({ selection, currentInstanceId }) =>
+        Effect.succeed({
+          ...selection,
+          instanceId: currentInstanceId ?? selectedInstanceId,
+        }),
+    });
+
+    for (const index of [1, 2]) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-auto-sticky-${index}`),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId(`auto-sticky-message-${index}`),
+            role: "user",
+            text: `turn ${index}`,
+            attachments: [],
+          },
+          modelSelection: automaticSelection,
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      await harness.drain();
+    }
+
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
+    expect(harness.sendTurn).toHaveBeenCalledTimes(2);
+    expect(harness.automaticCredentialResolve).toHaveBeenCalledTimes(2);
+    expect(harness.automaticCredentialResolve.mock.calls[1]?.[0].currentInstanceId).toBe(
+      selectedInstanceId,
+    );
   });
 
   effectIt.effect("projects starting before a slow provider session finishes", () =>

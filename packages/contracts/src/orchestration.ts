@@ -68,6 +68,7 @@ const ModelSelectionWire = Schema.Struct({
   instanceId: ProviderInstanceId,
   model: TrimmedNonEmptyString,
   options: Schema.optionalKey(ProviderOptionSelections),
+  credentialMode: Schema.optionalKey(Schema.Literal("automatic")),
 });
 
 // Source shape for persisted legacy payloads. Fields are typed as
@@ -79,6 +80,7 @@ const ModelSelectionSource = Schema.Struct({
   instanceId: Schema.optional(Schema.Unknown),
   model: Schema.Unknown,
   options: Schema.optional(Schema.Unknown),
+  credentialMode: Schema.optional(Schema.Unknown),
 });
 
 export const ModelSelection = ModelSelectionSource.pipe(
@@ -102,6 +104,7 @@ export const ModelSelection = ModelSelectionSource.pipe(
           model: raw.model,
         };
         if (raw.options !== undefined) base.options = raw.options;
+        if (raw.credentialMode !== undefined) base.credentialMode = raw.credentialMode;
         return Effect.succeed(base as typeof ModelSelectionWire.Encoded);
       },
       encode: (value) => {
@@ -110,6 +113,7 @@ export const ModelSelection = ModelSelectionSource.pipe(
           instanceId: value.instanceId,
         };
         if (value.options !== undefined) base.options = value.options;
+        if (value.credentialMode !== undefined) base.credentialMode = value.credentialMode;
         return Effect.succeed(base as typeof ModelSelectionSource.Encoded);
       },
     }),

@@ -674,6 +674,7 @@ export interface ChatComposerProps {
   ) => void;
 
   onProviderModelSelect: (instanceId: ProviderInstanceId, model: string) => void;
+  onCredentialModeChange: (mode: "automatic" | null) => void;
   getModelDisabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
   toggleInteractionMode: () => void;
   handleRuntimeModeChange: (mode: RuntimeMode) => void;
@@ -754,6 +755,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onPreviousActivePendingUserInputQuestion,
     onChangeActivePendingUserInputCustomAnswer,
     onProviderModelSelect,
+    onCredentialModeChange,
     getModelDisabledReason,
     toggleInteractionMode,
     handleRuntimeModeChange,
@@ -978,12 +980,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   //   5. First enabled entry overall / default instance for the kind.
   //
   const selectedInstanceId = useMemo<ProviderInstanceId>(() => {
-    const candidates: Array<string | null | undefined> = [
-      composerDraft.activeProvider,
-      activeThread?.session?.providerInstanceId,
-      activeThreadModelSelection?.instanceId,
-      activeProjectDefaultModelSelection?.instanceId,
-    ];
+    const candidates: Array<string | null | undefined> =
+      activeThreadModelSelection?.credentialMode === "automatic"
+        ? [
+            activeThread?.session?.providerInstanceId,
+            activeThreadModelSelection.instanceId,
+            composerDraft.activeProvider,
+            activeProjectDefaultModelSelection?.instanceId,
+          ]
+        : [
+            composerDraft.activeProvider,
+            activeThread?.session?.providerInstanceId,
+            activeThreadModelSelection?.instanceId,
+            activeProjectDefaultModelSelection?.instanceId,
+          ];
     for (const candidate of candidates) {
       if (!candidate) continue;
       const match = providerInstanceEntries.find(
@@ -1018,6 +1028,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   }, [
     activeProjectDefaultModelSelection?.instanceId,
     activeThread?.session?.providerInstanceId,
+    activeThreadModelSelection?.credentialMode,
     activeThreadModelSelection?.instanceId,
     composerDraft.activeProvider,
     lockedContinuationGroupKey,
@@ -1098,10 +1109,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }),
     [planModeUiEnabled, providerStatuses, selectedProvider],
   );
-  const selectedModelSelection = useMemo<ModelSelection>(
-    () => createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
-    [selectedInstanceId, selectedModel, selectedModelOptionsForDispatch],
-  );
+  const selectedCredentialMode =
+    composerDraft.modelSelectionByProvider[selectedInstanceId]?.credentialMode ??
+    (activeThreadModelSelection?.instanceId === selectedInstanceId
+      ? activeThreadModelSelection.credentialMode
+      : undefined);
+  const selectedModelSelection = useMemo<ModelSelection>(() => {
+    const selection = createModelSelection(
+      selectedInstanceId,
+      selectedModel,
+      selectedModelOptionsForDispatch,
+    );
+    return selectedCredentialMode === "automatic"
+      ? { ...selection, credentialMode: "automatic" }
+      : selection;
+  }, [selectedCredentialMode, selectedInstanceId, selectedModel, selectedModelOptionsForDispatch]);
   const selectedModelForPicker = selectedModel;
   // Instance-keyed option list so the picker can show each configured
   // instance (built-in + custom) as a first-class sidebar entry. The
@@ -3989,6 +4011,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       modelOptionsByInstance={modelOptionsByInstance}
                       triggerClassName="-ms-2.5"
                       terminalOpen={terminalOpen}
+                      {...(selectedCredentialMode === "automatic"
+                        ? { credentialMode: "automatic" as const }
+                        : {})}
                       open={isComposerModelPickerOpen}
                       {...(composerProviderState.modelPickerIconClassName
                         ? {
@@ -4001,6 +4026,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       }}
                       getModelDisabledReason={getModelDisabledReason}
                       onInstanceModelChange={onProviderModelSelect}
+                      onCredentialModeChange={onCredentialModeChange}
                     />
                   )}
 
