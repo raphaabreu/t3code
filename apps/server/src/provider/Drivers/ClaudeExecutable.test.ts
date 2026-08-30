@@ -24,14 +24,31 @@ function withWindowsResolution(input: {
 }
 
 describe("resolveClaudeSdkExecutablePath", () => {
-  it.effect("returns the configured path unchanged on non-Windows platforms", () =>
+  it.effect("resolves a bare command through PATH on non-Windows platforms", () =>
+    Effect.gen(function* () {
+      const nativeBinary = "/Users/dev/.local/bin/claude";
+      expect(
+        yield* resolveClaudeSdkExecutablePath("claude", {
+          PATH: "/Users/dev/.local/bin:/usr/bin",
+        }).pipe(
+          Effect.provideService(HostProcessPlatform, "darwin"),
+          Effect.provideService(SpawnExecutableResolution, (command, platform, environment) => {
+            expect(command).toBe("claude");
+            expect(platform).toBe("darwin");
+            expect(environment.PATH).toBe("/Users/dev/.local/bin:/usr/bin");
+            return nativeBinary;
+          }),
+        ),
+      ).toBe(nativeBinary);
+    }),
+  );
+
+  it.effect("keeps the configured command when non-Windows PATH resolution fails", () =>
     Effect.gen(function* () {
       expect(
         yield* resolveClaudeSdkExecutablePath("claude", {}).pipe(
-          Effect.provideService(HostProcessPlatform, "darwin"),
-          Effect.provideService(SpawnExecutableResolution, () => {
-            throw new Error("must not resolve on non-Windows platforms");
-          }),
+          Effect.provideService(HostProcessPlatform, "linux"),
+          Effect.provideService(SpawnExecutableResolution, () => undefined),
         ),
       ).toBe("claude");
     }),
