@@ -279,6 +279,10 @@ import {
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
+import {
+  orderComposerProviderInstanceCandidates,
+  resolveComposerCredentialMode,
+} from "./composerCredentialSelection";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import type { SessionPhase, Thread } from "../../types";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
@@ -971,31 +975,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   // Resolve which configured instance the composer is currently targeting.
   // Priority:
-  //   1. The composer draft's `activeProvider` — the user's unsaved pick
-  //      from the model picker (must win, otherwise the UI appears to
-  //      ignore picker selections).
-  //   2. Thread's persisted instance id (server-side saved selection).
-  //   3. Project default's instance id.
+  //   1. An explicit fixed-account pick from the composer draft.
+  //   2. The live session instance while automatic routing remains enabled.
+  //   3. The remaining draft/thread/project fallbacks.
   //   4. First enabled entry matching the current driver kind.
   //   5. First enabled entry overall / default instance for the kind.
   //
   const selectedInstanceId = useMemo<ProviderInstanceId>(() => {
-    const candidates: Array<string | null | undefined> =
-      activeThreadModelSelection?.credentialMode === "automatic"
-        ? [
-            activeThread?.session?.providerInstanceId,
-            activeThreadModelSelection.instanceId,
-            composerDraft.activeProvider,
-            activeProjectDefaultModelSelection?.instanceId,
-          ]
-        : [
-            composerDraft.activeProvider,
-            activeThread?.session?.providerInstanceId,
-            activeThreadModelSelection?.instanceId,
-            activeProjectDefaultModelSelection?.instanceId,
-          ];
+    const candidates = orderComposerProviderInstanceCandidates({
+      draft: composerDraft,
+      sessionInstanceId: activeThread?.session?.providerInstanceId,
+      threadModelSelection: activeThreadModelSelection,
+      projectInstanceId: activeProjectDefaultModelSelection?.instanceId,
+    });
     for (const candidate of candidates) {
-      if (!candidate) continue;
       const match = providerInstanceEntries.find(
         (entry) => entry.instanceId === candidate && entry.enabled && entry.isAvailable,
       );
@@ -1031,6 +1024,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadModelSelection?.credentialMode,
     activeThreadModelSelection?.instanceId,
     composerDraft.activeProvider,
+    composerDraft.modelSelectionByProvider,
+    composerDraft.modelSelectionExplicit,
     lockedContinuationGroupKey,
     lockedProvider,
     providerInstanceEntries,
@@ -1109,11 +1104,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     }),
     [planModeUiEnabled, providerStatuses, selectedProvider],
   );
-  const selectedCredentialMode =
-    composerDraft.modelSelectionByProvider[selectedInstanceId]?.credentialMode ??
-    (activeThreadModelSelection?.instanceId === selectedInstanceId
-      ? activeThreadModelSelection.credentialMode
-      : undefined);
+  const selectedCredentialMode = resolveComposerCredentialMode({
+    draft: composerDraft,
+    selectedInstanceId,
+    threadModelSelection: activeThreadModelSelection,
+  });
   const selectedModelSelection = useMemo<ModelSelection>(() => {
     const selection = createModelSelection(
       selectedInstanceId,
