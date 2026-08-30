@@ -150,9 +150,12 @@ const make = Effect.gen(function* () {
       );
     }
 
-    const current = input.currentInstanceId
-      ? providers.find((provider) => provider.instanceId === input.currentInstanceId)
-      : undefined;
+    // Auto is failover-only. Before a session exists, the selection shown in
+    // the composer is the current credential; once a session exists, its
+    // bound instance is authoritative. Do not invoke ccp/cdp until that
+    // credential is known unavailable.
+    const currentInstanceId = input.currentInstanceId ?? input.selection.instanceId;
+    const current = providers.find((provider) => provider.instanceId === currentInstanceId);
     if (
       current &&
       current.driver === anchor.driver &&

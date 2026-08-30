@@ -59,6 +59,23 @@ function withHelperPath(path: string) {
 }
 
 selectorLayer("AutomaticCredentialSelector", (it) => {
+  it.effect(
+    "keeps the selected credential before the first session without invoking the helper",
+    () =>
+      Effect.gen(function* () {
+        yield* withHelperPath("/path/that/must/not/run");
+        const selector = yield* AutomaticCredentialSelector;
+        const resolved = yield* selector.resolve({
+          selection: {
+            instanceId: anchorInstanceId,
+            model: "gpt-5.4",
+            credentialMode: "automatic",
+          },
+        });
+        expect(resolved.instanceId).toBe(anchorInstanceId);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("keeps a healthy current credential without invoking the helper", () =>
     Effect.gen(function* () {
       yield* withHelperPath("/path/that/must/not/run");
