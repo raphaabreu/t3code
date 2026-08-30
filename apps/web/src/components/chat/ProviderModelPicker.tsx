@@ -1,4 +1,5 @@
 import {
+  PROVIDER_DISPLAY_NAMES,
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
@@ -73,6 +74,14 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     : props.model;
   const showInstanceBadge =
     activeEntry !== null && shouldShowInstanceBadge(activeEntry, props.instanceEntries);
+  const activeInstanceProfileName = (() => {
+    if (!activeEntry) return null;
+    const providerName = PROVIDER_DISPLAY_NAMES[activeEntry.driverKind];
+    const providerPrefix = providerName ? `${providerName} · ` : null;
+    return providerPrefix && activeEntry.displayName.startsWith(providerPrefix)
+      ? activeEntry.displayName.slice(providerPrefix.length)
+      : activeEntry.displayName;
+  })();
 
   const setIsMenuOpen = (open: boolean) => {
     props.onOpenChange?.(open);
@@ -207,7 +216,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
               data-chat-provider-profile-name="true"
               title={activeEntry.displayName}
             >
-              <span className="truncate">{activeEntry.displayName}</span>
+              <span className="truncate">{activeInstanceProfileName}</span>
             </Badge>
           ) : null}
         </span>

@@ -130,7 +130,8 @@ describe("ProviderModelPicker", () => {
     });
 
     expect(markup).toContain('data-chat-provider-profile-name="true"');
-    expect(markup).toContain("Claude · aline.lorenzeto@gmail.com");
+    expect(markup).toContain(">aline.lorenzeto@gmail.com</span>");
+    expect(markup).not.toContain(">Claude · aline.lorenzeto@gmail.com</span>");
     expect(markup).toContain(">Auto<");
   });
 });
