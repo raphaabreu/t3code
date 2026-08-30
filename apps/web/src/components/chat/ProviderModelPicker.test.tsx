@@ -6,7 +6,7 @@ import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import type { ModelEsque } from "./providerIconUtils";
 
-function providerEntry(instanceId: string, driver: string) {
+function providerEntry(instanceId: string, driver: string, displayName?: string) {
   const provider: ServerProvider = {
     instanceId: ProviderInstanceId.make(instanceId),
     driver: ProviderDriverKind.make(driver),
@@ -19,6 +19,7 @@ function providerEntry(instanceId: string, driver: string) {
     models: [],
     slashCommands: [],
     skills: [],
+    ...(displayName ? { displayName } : {}),
   };
   return deriveProviderInstanceEntries([provider])[0]!;
 }
@@ -30,9 +31,11 @@ function renderPicker(input: {
   options: ReadonlyArray<ModelEsque>;
   includeEntry?: boolean;
   credentialMode?: "automatic";
+  showActiveInstanceName?: boolean;
+  displayName?: string;
 }) {
   const instanceId = ProviderInstanceId.make(input.instanceId);
-  const entry = providerEntry(input.instanceId, input.driver);
+  const entry = providerEntry(input.instanceId, input.driver, input.displayName);
   return renderToStaticMarkup(
     <ProviderModelPicker
       activeInstanceId={instanceId}
@@ -41,6 +44,7 @@ function renderPicker(input: {
       instanceEntries={input.includeEntry === false ? [] : [entry]}
       modelOptionsByInstance={new Map([[instanceId, input.options]])}
       credentialMode={input.credentialMode}
+      {...(input.showActiveInstanceName ? { showActiveInstanceName: true } : {})}
       onInstanceModelChange={() => {}}
     />,
   );
@@ -111,6 +115,22 @@ describe("ProviderModelPicker", () => {
       credentialMode: "automatic",
     });
 
+    expect(markup).toContain(">Auto<");
+  });
+
+  it("shows the active credential profile name when requested", () => {
+    const markup = renderPicker({
+      instanceId: "claude_aline_profile",
+      driver: "claudeAgent",
+      model: "claude-opus-5",
+      options: [{ slug: "claude-opus-5", name: "Claude Opus 5" }],
+      credentialMode: "automatic",
+      showActiveInstanceName: true,
+      displayName: "Claude · aline.lorenzeto@gmail.com",
+    });
+
+    expect(markup).toContain('data-chat-provider-profile-name="true"');
+    expect(markup).toContain("Claude · aline.lorenzeto@gmail.com");
     expect(markup).toContain(">Auto<");
   });
 });

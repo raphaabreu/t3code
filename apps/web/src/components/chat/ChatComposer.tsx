@@ -4004,6 +4004,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       instanceEntries={providerInstanceEntries}
                       keybindings={keybindings}
                       modelOptionsByInstance={modelOptionsByInstance}
+                      showActiveInstanceName
                       triggerClassName="-ms-2.5"
                       terminalOpen={terminalOpen}
                       {...(selectedCredentialMode === "automatic"
