@@ -435,52 +435,80 @@ it.layer(NodeServices.layer)("bin cli parsing", (it) => {
     }),
   );
 
-  it.effect("adds, renames, and removes projects offline through the orchestration engine", () =>
-    Effect.gen(function* () {
-      const baseDir = NodeFS.mkdtempSync(
-        NodePath.join(NodeOS.tmpdir(), "t3-cli-projects-offline-test-"),
-      );
-      const workspaceRoot = NodeFS.mkdtempSync(
-        NodePath.join(NodeOS.tmpdir(), "t3-cli-projects-workspace-"),
-      );
+  it.effect(
+    "adds, renames, relocates, and removes projects offline through the orchestration engine",
+    () =>
+      Effect.gen(function* () {
+        const baseDir = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-cli-projects-offline-test-"),
+        );
+        const workspaceRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-cli-projects-workspace-"),
+        );
+        const relocatedWorkspaceRoot = NodeFS.mkdtempSync(
+          NodePath.join(NodeOS.tmpdir(), "t3-cli-projects-relocated-workspace-"),
+        );
 
-      yield* runCliWithRuntime([
-        "project",
-        "add",
-        workspaceRoot,
-        "--title",
-        "Alpha",
-        "--base-dir",
-        baseDir,
-      ]);
-      const afterAdd = yield* readPersistedSnapshot(baseDir);
-      const addedProject = afterAdd.projects.find(
-        (project) => project.workspaceRoot === workspaceRoot && project.deletedAt === null,
-      );
-      assert.isTrue(addedProject !== undefined);
-      assert.equal(addedProject?.title, "Alpha");
+        yield* runCliWithRuntime([
+          "project",
+          "add",
+          workspaceRoot,
+          "--title",
+          "Alpha",
+          "--base-dir",
+          baseDir,
+        ]);
+        const afterAdd = yield* readPersistedSnapshot(baseDir);
+        const addedProject = afterAdd.projects.find(
+          (project) => project.workspaceRoot === workspaceRoot && project.deletedAt === null,
+        );
+        assert.isTrue(addedProject !== undefined);
+        assert.equal(addedProject?.title, "Alpha");
 
-      yield* runCliWithRuntime(["project", "rename", workspaceRoot, "Beta", "--base-dir", baseDir]);
-      const afterRename = yield* readPersistedSnapshot(baseDir);
-      const renamedProject = afterRename.projects.find(
-        (project) => project.id === addedProject?.id,
-      );
-      assert.equal(renamedProject?.title, "Beta");
-      assert.equal(renamedProject?.deletedAt, null);
+        yield* runCliWithRuntime([
+          "project",
+          "rename",
+          workspaceRoot,
+          "Beta",
+          "--base-dir",
+          baseDir,
+        ]);
+        const afterRename = yield* readPersistedSnapshot(baseDir);
+        const renamedProject = afterRename.projects.find(
+          (project) => project.id === addedProject?.id,
+        );
+        assert.equal(renamedProject?.title, "Beta");
+        assert.equal(renamedProject?.deletedAt, null);
 
-      yield* runCliWithRuntime([
-        "project",
-        "remove",
-        addedProject?.id ?? "",
-        "--base-dir",
-        baseDir,
-      ]);
-      const afterRemove = yield* readPersistedSnapshot(baseDir);
-      const removedProject = afterRemove.projects.find(
-        (project) => project.id === addedProject?.id,
-      );
-      assert.isTrue((removedProject?.deletedAt ?? null) !== null);
-    }),
+        yield* runCliWithRuntime([
+          "project",
+          "relocate",
+          workspaceRoot,
+          relocatedWorkspaceRoot,
+          "--base-dir",
+          baseDir,
+        ]);
+        const afterRelocate = yield* readPersistedSnapshot(baseDir);
+        const relocatedProject = afterRelocate.projects.find(
+          (project) => project.id === addedProject?.id,
+        );
+        assert.equal(relocatedProject?.workspaceRoot, relocatedWorkspaceRoot);
+        assert.equal(relocatedProject?.title, "Beta");
+        assert.equal(relocatedProject?.deletedAt, null);
+
+        yield* runCliWithRuntime([
+          "project",
+          "remove",
+          addedProject?.id ?? "",
+          "--base-dir",
+          baseDir,
+        ]);
+        const afterRemove = yield* readPersistedSnapshot(baseDir);
+        const removedProject = afterRemove.projects.find(
+          (project) => project.id === addedProject?.id,
+        );
+        assert.isTrue((removedProject?.deletedAt ?? null) !== null);
+      }),
   );
 
   it.effect("force removes projects that still contain threads", () =>
