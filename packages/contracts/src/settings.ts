@@ -512,6 +512,32 @@ export const GrokSettings = makeProviderSettingsSchema(
 );
 export type GrokSettings = typeof GrokSettings.Type;
 
+export const WolfSettings = makeProviderSettingsSchema(
+  {
+    // Off by default: wolf runs its tools without a permission system, so
+    // users opt in from Settings rather than having it probed on install.
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("wolf").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the Wolf CLI binary.",
+        providerSettingsForm: { placeholder: "wolf", clearWhenEmpty: "omit" },
+      }),
+    ),
+    customModels: Schema.Array(Schema.String).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["binaryPath"],
+  },
+);
+export type WolfSettings = typeof WolfSettings.Type;
+
 export const OpenCodeSettings = makeProviderSettingsSchema(
   {
     // Off by default (like Cursor and Grok): the binding is not yet stable
@@ -716,6 +742,7 @@ export const ServerSettings = Schema.Struct({
     claudeAgent: ClaudeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     cursor: CursorSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     grok: GrokSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    wolf: WolfSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
@@ -862,6 +889,12 @@ const GrokSettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+const WolfSettingsPatch = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  binaryPath: Schema.optionalKey(TrimmedString),
+  customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
 const OpenCodeSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(TrimmedString),
@@ -910,6 +943,7 @@ export const ServerSettingsPatch = Schema.Struct({
       claudeAgent: Schema.optionalKey(ClaudeSettingsPatch),
       cursor: Schema.optionalKey(CursorSettingsPatch),
       grok: Schema.optionalKey(GrokSettingsPatch),
+      wolf: Schema.optionalKey(WolfSettingsPatch),
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
     }),
   ),
