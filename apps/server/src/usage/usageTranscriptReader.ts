@@ -23,6 +23,7 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parseWolfLine,
   type UsageRecord,
 } from "./usageTranscripts.ts";
 
@@ -119,6 +120,9 @@ export async function readTranscriptRecords(
 ): Promise<readonly UsageRecord[] | null> {
   const records: UsageRecord[] = [];
   const codexState = initialCodexScanState();
+  // Wolf writes one session per file and repeats no session id on its entries,
+  // so the file name carries the identity records are grouped by.
+  const wolfSessionId = NodePath.basename(filePath, ".jsonl");
 
   try {
     const lines = NodeReadline.createInterface({
@@ -143,6 +147,13 @@ export async function readTranscriptRecords(
       if (provider === "grok") {
         if (!mightCarryUsage(line, provider)) continue;
         for (const grokRecord of parseGrokLine(line)) records.push(grokRecord);
+        continue;
+      }
+
+      if (provider === "wolf") {
+        if (!mightCarryUsage(line, provider)) continue;
+        const wolfRecord = parseWolfLine(line, wolfSessionId);
+        if (wolfRecord !== null) records.push(wolfRecord);
         continue;
       }
 

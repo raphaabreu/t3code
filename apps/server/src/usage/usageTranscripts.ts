@@ -70,6 +70,7 @@ export function totalTokens(totals: UsageTokenTotals): number {
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
   if (provider === "claude") return line.includes('"usage"');
   if (provider === "grok") return line.includes('"turn_completed"');
+  if (provider === "wolf") return line.includes('"usage"');
   return line.includes('"token_count"');
 }
 
@@ -366,6 +367,104 @@ function grokTotalsToUsage(totals: GrokUsageTotals): UsageTokenTotals {
  * Returns every record for the line (0 or more). Callers stream line-by-line
  * and flatten.
  */
+/* -------------------------------------------------------------------------- */
+/* Wolf                                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Entry kinds in a Wolf session that carry provider usage. Assistant messages
+ * cover normal turns; the rest are model calls Wolf makes on its own behalf
+ * (titles, goals, compaction summaries) and are billed the same way.
+ */
+const WOLF_USAGE_ENTRY_TYPES = new Set(["message", "session_title", "session_goal", "compaction"]);
+
+function readWolfUsageTotals(raw: unknown): UsageTokenTotals | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const usage = raw as Record<string, unknown>;
+  const read = (key: string): number => {
+    const value = usage[key];
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
+  };
+  return {
+    uncachedInputTokens: read("input"),
+    cachedInputTokens: read("cacheRead"),
+    cacheCreationTokens: read("cacheWrite"),
+    outputTokens: read("output"),
+    reasoningTokens: read("reasoning"),
+  };
+}
+
+function readWolfCostUsd(raw: unknown): number | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const cost = (raw as Record<string, unknown>)["cost"];
+  if (typeof cost !== "object" || cost === null) return null;
+  const total = (cost as Record<string, unknown>)["total"];
+  return typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : null;
+}
+
+/**
+ * Parses one line of a Wolf session file.
+ *
+ * Sessions are an append-only tree: every entry has a stable id and each LLM
+ * call is written exactly once, so the entry id is a sound dedupe key even
+ * across forks and branch switches, which duplicate ancestry by reference
+ * rather than by rewriting entries.
+ */
+export function parseWolfLine(line: string, sessionIdFallback: string): UsageRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const entry = parsed as Record<string, unknown>;
+
+  const entryType = entry["type"];
+  if (typeof entryType !== "string" || !WOLF_USAGE_ENTRY_TYPES.has(entryType)) return null;
+
+  // An assistant message nests usage and model under `message`; the other
+  // entry kinds carry usage at the top level.
+  const message = entry["message"];
+  const messageRecord =
+    typeof message === "object" && message !== null ? (message as Record<string, unknown>) : null;
+  if (entryType === "message" && messageRecord?.["role"] !== "assistant") return null;
+
+  const usageSource = messageRecord?.["usage"] ?? entry["usage"];
+  const totals = readWolfUsageTotals(usageSource);
+  if (totals === null || totalTokens(totals) === 0) return null;
+
+  const timestamp = entry["timestamp"];
+  const timestampMs = typeof timestamp === "string" ? Date.parse(timestamp) : Number.NaN;
+  if (!Number.isFinite(timestampMs)) return null;
+
+  // Wolf model ids are unique only within a provider, matching the
+  // `provider/id` slug the adapter and model picker use.
+  const modelId = messageRecord?.["model"];
+  const providerId = messageRecord?.["provider"];
+  const model =
+    typeof modelId === "string" && modelId.length > 0
+      ? typeof providerId === "string" && providerId.length > 0
+        ? `${providerId}/${modelId}`
+        : modelId
+      : "unknown";
+
+  const entryId = entry["id"];
+  return {
+    provider: "wolf",
+    timestampMs,
+    model,
+    sessionId: sessionIdFallback,
+    totals,
+    reportedCostUsd: readWolfCostUsd(usageSource),
+    dedupeKey: typeof entryId === "string" && entryId.length > 0 ? `wolf:${entryId}` : null,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Grok                                                                       */
+/* -------------------------------------------------------------------------- */
+
 export function parseGrokLine(line: string): readonly UsageRecord[] {
   let parsed: unknown;
   try {
