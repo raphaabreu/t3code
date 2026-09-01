@@ -16,17 +16,31 @@ const exitOnPrompt = NodeProcess.env.T3_WOLF_MOCK_EXIT_ON_PROMPT === "1";
 // Wolf acks `prompt` before running the turn, so a crash in between is the
 // case that leaves a naive client waiting on a settle that never arrives.
 const exitAfterAck = NodeProcess.env.T3_WOLF_MOCK_EXIT_AFTER_ACK === "1";
+// Node emits `exit` before stdio drains, so this covers the window where a
+// finished turn could be misread as a crash.
+const exitAfterTurn = NodeProcess.env.T3_WOLF_MOCK_EXIT_AFTER_TURN === "1";
 const emitLeadingNoise = NodeProcess.env.T3_WOLF_MOCK_EMIT_LEADING_NOISE === "1";
 const replyText = NodeProcess.env.T3_WOLF_MOCK_REPLY_TEXT ?? "Mock wolf reply.";
 const modelId = NodeProcess.env.T3_WOLF_MOCK_MODEL ?? "gpt-5.6-sol";
 
-function send(payload: unknown): void {
-  NodeProcess.stdout.write(`${JSON.stringify(payload)}\n`);
+function send(payload: unknown, onFlush?: () => void): void {
+  NodeProcess.stdout.write(`${JSON.stringify(payload)}\n`, onFlush);
 }
 
-function respond(id: string | undefined, command: string, data?: unknown): void {
-  if (id === undefined) return;
-  send({ id, type: "response", command, success: true, ...(data === undefined ? {} : { data }) });
+function respond(
+  id: string | undefined,
+  command: string,
+  data?: unknown,
+  onFlush?: () => void,
+): void {
+  if (id === undefined) {
+    onFlush?.();
+    return;
+  }
+  send(
+    { id, type: "response", command, success: true, ...(data === undefined ? {} : { data }) },
+    onFlush,
+  );
 }
 
 let steerCount = 0;
@@ -96,7 +110,7 @@ function runTurn(): void {
     toolResults: [],
   });
   send({ type: "agent_end", messages: [], willRetry: false });
-  send({ type: "agent_settled" });
+  send({ type: "agent_settled" }, exitAfterTurn ? () => NodeProcess.exit(0) : undefined);
 }
 
 let buffer = "";
@@ -120,10 +134,13 @@ NodeProcess.stdin.on("data", (chunk: Buffer) => {
         if (exitOnPrompt) {
           NodeProcess.exit(1);
         }
-        respond(id, "prompt");
         if (exitAfterAck) {
-          NodeProcess.exit(1);
+          // Exit only once the ack has actually flushed, otherwise the write
+          // races process death and the client never sees the response.
+          respond(id, "prompt", undefined, () => NodeProcess.exit(1));
+          break;
         }
+        respond(id, "prompt");
         if (!hangTurn) runTurn();
         break;
       case "steer":

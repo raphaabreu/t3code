@@ -104,7 +104,14 @@ export const makeWolfTextGeneration = Effect.fn("makeWolfTextGeneration")(functi
           if (typeof delta.delta !== "string") return;
           yield* Ref.update(outputRef, (current) => current + delta.delta);
         }),
-      ).pipe(Effect.forkScoped);
+      ).pipe(
+        // Opening on stream end as well as on `agent_settled` keeps an early
+        // exit from stalling for the full timeout. The stream ends only after
+        // stdout drains, so trailing deltas are already applied — racing the
+        // process exit event instead would truncate the output.
+        Effect.ensuring(settled.open),
+        Effect.forkScoped,
+      );
 
       yield* client.request("prompt", { message: prompt }).pipe(
         Effect.mapError(
@@ -117,9 +124,7 @@ export const makeWolfTextGeneration = Effect.fn("makeWolfTextGeneration")(functi
         ),
       );
 
-      // An early exit never emits `agent_settled`, so race the latch against
-      // process death rather than stalling for the full timeout.
-      yield* Effect.raceAll([settled.await, client.awaitExit]).pipe(
+      yield* settled.await.pipe(
         Effect.timeoutOption(WOLF_TIMEOUT_MS),
         Effect.flatMap(
           Option.match({
@@ -141,7 +146,9 @@ export const makeWolfTextGeneration = Effect.fn("makeWolfTextGeneration")(functi
       if (!trimmed) {
         return yield* new TextGenerationError({
           operation,
-          detail: "Wolf returned empty output.",
+          detail: (yield* client.isRunning)
+            ? "Wolf returned empty output."
+            : "Wolf exited before returning output.",
         });
       }
 

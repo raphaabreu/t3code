@@ -56,8 +56,6 @@ export interface WolfRpcClient {
   readonly events: Stream.Stream<WolfEvent>;
   /** False once stdout has ended, whether or not the OS handle lingers. */
   readonly isRunning: Effect.Effect<boolean>;
-  /** Resolves when the process exits, so callers can race it against a wait. */
-  readonly awaitExit: Effect.Effect<void>;
 }
 
 interface PendingRequest {
@@ -278,6 +276,5 @@ export const makeWolfRpcClient = (
       notify,
       events: Stream.fromQueue(events),
       isRunning: Ref.get(exited).pipe(Effect.map((dead) => !dead)),
-      awaitExit: child.exitCode.pipe(Effect.ignore, Effect.asVoid),
     } satisfies WolfRpcClient;
   });

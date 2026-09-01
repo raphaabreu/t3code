@@ -193,6 +193,28 @@ export function makeWolfAdapter(wolfSettings: WolfSettings, options?: WolfAdapte
           .pipe(Effect.ignore);
       });
 
+    /**
+     * Releases a session whose process is gone. Wolf acknowledges `prompt`
+     * before running the turn, so a crash in that window would otherwise leave
+     * `sendTurn` waiting on a settle that can never arrive, and leave the dead
+     * session registered so recovery never runs.
+     */
+    const handleSessionEnded = (ctx: WolfSessionContext) =>
+      Effect.gen(function* () {
+        if (ctx.stopped) return;
+        ctx.stopped = true;
+        ctx.exitedUnexpectedly = true;
+        sessions.delete(ctx.threadId);
+        if (ctx.settle) yield* Deferred.succeed(ctx.settle, undefined).pipe(Effect.ignore);
+        yield* offerRuntimeEvent({
+          type: "session.exited",
+          ...(yield* makeEventStamp()),
+          provider: PROVIDER,
+          threadId: ctx.threadId,
+          payload: { exitKind: "error", reason: "Wolf process exited unexpectedly." },
+        });
+      });
+
     const startSession: WolfAdapterShape["startSession"] = (input) =>
       withThreadLock(
         input.threadId,
@@ -309,32 +331,16 @@ export function makeWolfAdapter(wolfSettings: WolfSettings, options?: WolfAdapte
               Effect.catch((cause) =>
                 Effect.logError("Failed to process a Wolf runtime event.", { cause }),
               ),
+              // The event stream ends only after stdout has drained and every
+              // record has been handled, so this runs strictly after any final
+              // `turn_end` / `agent_settled`. Watching the process exit event
+              // instead would race the pump and report a finished turn as
+              // failed.
+              Effect.ensuring(handleSessionEnded(ctx).pipe(Effect.ignore)),
               Effect.forkIn(sessionScope),
             );
 
             sessions.set(input.threadId, ctx);
-
-            // Wolf acknowledges `prompt` before the turn runs, so a crash after
-            // the ack would otherwise leave sendTurn waiting on a settle that
-            // can never arrive and the thread pinned as running.
-            yield* client.awaitExit.pipe(
-              Effect.tap(() =>
-                Effect.gen(function* () {
-                  if (ctx.stopped) return;
-                  ctx.exitedUnexpectedly = true;
-                  if (ctx.settle)
-                    yield* Deferred.succeed(ctx.settle, undefined).pipe(Effect.ignore);
-                  yield* offerRuntimeEvent({
-                    type: "session.exited",
-                    ...(yield* makeEventStamp()),
-                    provider: PROVIDER,
-                    threadId: ctx.threadId,
-                    payload: { exitKind: "error", reason: "Wolf process exited unexpectedly." },
-                  });
-                }),
-              ),
-              Effect.forkIn(sessionScope),
-            );
 
             yield* offerRuntimeEvent({
               type: "session.started",
@@ -372,8 +378,17 @@ export function makeWolfAdapter(wolfSettings: WolfSettings, options?: WolfAdapte
             return session;
           }).pipe(
             // Anything that fails or is interrupted after the spawn must close
-            // the scope, or the wolf child outlives the failed startSession.
-            Effect.onError(() => Scope.close(sessionScope, Exit.void).pipe(Effect.ignore)),
+            // the scope and drop the registration, or the wolf child outlives
+            // the failed startSession and a dead session stays routable.
+            Effect.onError(() =>
+              Effect.sync(() => {
+                const registered = sessions.get(input.threadId);
+                if (registered) {
+                  registered.stopped = true;
+                  sessions.delete(input.threadId);
+                }
+              }).pipe(Effect.andThen(Scope.close(sessionScope, Exit.void).pipe(Effect.ignore))),
+            ),
           );
         }),
       );
@@ -445,9 +460,11 @@ export function makeWolfAdapter(wolfSettings: WolfSettings, options?: WolfAdapte
           // Only the last prompt of a steered turn settles it.
           if (ctx.promptsInFlight === 1) {
             const outcome = ctx.lastTurnEnd;
-            const errorMessage = ctx.exitedUnexpectedly
-              ? "Wolf exited before finishing the turn."
-              : outcome?.errorMessage;
+            // A real provider error reported in `turn_end` (rate limit, auth)
+            // is more useful than the generic exit text, so it wins.
+            const errorMessage =
+              outcome?.errorMessage ??
+              (ctx.exitedUnexpectedly ? "Wolf exited before finishing the turn." : undefined);
             yield* offerRuntimeEvent({
               type: "turn.completed",
               ...(yield* makeEventStamp()),

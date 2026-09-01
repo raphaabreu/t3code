@@ -233,6 +233,65 @@ wolfAdapterTestLayer("WolfAdapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("keeps a completed turn successful when wolf exits right after it", () =>
+    Effect.gen(function* () {
+      // Teardown hangs off end-of-stream rather than the process exit event,
+      // which fires before stdout drains. This is a smoke test for that
+      // ordering, not a proof: the underlying race is timing-dependent.
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockWolfWrapper({ T3_WOLF_MOCK_EXIT_AFTER_TURN: "1" }),
+      );
+      const adapter = yield* makeAdapter(wrapperPath);
+      const events = yield* collectEvents(adapter);
+      const threadId = ThreadId.make("wolf-thread-exit-after-turn");
+
+      yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+      yield* adapter.sendTurn({ threadId, input: "hello" });
+
+      const completed = yield* events.waitFor("turn.completed");
+      assert.equal(completed.payload.state, "completed");
+      const usage = yield* events.waitFor("thread.token-usage.updated");
+      assert.equal(usage.payload.usage.inputTokens, 100);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("reports the provider error rather than the exit when both occur", () =>
+    Effect.gen(function* () {
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockWolfWrapper({ T3_WOLF_MOCK_FAIL_TURN: "1", T3_WOLF_MOCK_EXIT_AFTER_TURN: "1" }),
+      );
+      const adapter = yield* makeAdapter(wrapperPath);
+      const events = yield* collectEvents(adapter);
+      const threadId = ThreadId.make("wolf-thread-error-then-exit");
+
+      yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+      yield* adapter.sendTurn({ threadId, input: "hello" });
+
+      const completed = yield* events.waitFor("turn.completed");
+      assert.equal(completed.payload.state, "failed");
+      assert.equal(completed.payload.errorMessage, "Mock wolf failure.");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("drops a crashed session so it stops being routable", () =>
+    Effect.gen(function* () {
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockWolfWrapper({ T3_WOLF_MOCK_EXIT_AFTER_ACK: "1" }),
+      );
+      const adapter = yield* makeAdapter(wrapperPath);
+      const events = yield* collectEvents(adapter);
+      const threadId = ThreadId.make("wolf-thread-unregister");
+
+      yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+      yield* adapter.sendTurn({ threadId, input: "hello" });
+      yield* events.waitFor("session.exited");
+
+      // A wedged session would still answer hasSession and block recovery.
+      assert.isFalse(yield* adapter.hasSession(threadId));
+      assert.equal((yield* adapter.listSessions()).length, 0);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("rejects a request issued after the process is gone", () =>
     Effect.gen(function* () {
       const wrapperPath = yield* Effect.promise(() =>
