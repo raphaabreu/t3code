@@ -14,13 +14,14 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
+import * as Fiber from "effect/Fiber";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { type ProviderRuntimeEvent, ThreadId, WolfSettings } from "@t3tools/contracts";
-import { describe, expect } from "vite-plus/test";
+import { assert, describe, expect } from "vite-plus/test";
 
 import { ServerConfig } from "../../config.ts";
 import { makeWolfAdapter } from "../Layers/WolfAdapter.ts";
@@ -67,6 +68,40 @@ describe.runIf(process.env.T3_WOLF_PROBE === "1")("Wolf CLI probe", () => {
         }
       }).pipe(Effect.provide(NodeServices.layer)),
     { timeout: 60_000 },
+  );
+
+  it.effect.runIf(process.env.T3_WOLF_LIVE_TURN === "1")(
+    "delivers a second turn sent while the first is still running",
+    () =>
+      Effect.gen(function* () {
+        // Reproduces the reported failure against the real CLI: a prompt
+        // admitted mid-stream without a streaming behavior is refused with
+        // "Agent is already processing".
+        const cwd = yield* Effect.promise(() =>
+          NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "wolf-steer-probe-")),
+        );
+        const threadId = ThreadId.make(`wolf-steer-${yield* Clock.currentTimeMillis}`);
+        const adapter = yield* makeWolfAdapter(liveSettings);
+        const events = yield* collect(adapter.streamEvents);
+
+        yield* adapter.startSession({ threadId, cwd, runtimeMode: "full-access" });
+        const first = yield* Effect.forkScoped(
+          adapter.sendTurn({ threadId, input: "Write a haiku about wolves." }),
+        );
+        yield* events.waitFor("turn.started");
+
+        const second = yield* Effect.exit(
+          adapter.sendTurn({ threadId, input: "Also mention the moon." }),
+        );
+        assert.isTrue(second._tag === "Success");
+        yield* Fiber.await(first);
+        yield* adapter.stopSession(threadId);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3code-wolf-steer-" })),
+        Effect.provide(NodeServices.layer),
+      ),
+    { timeout: LIVE_TURN_TIMEOUT_MS },
   );
 
   it.effect.runIf(process.env.T3_WOLF_LIVE_TURN === "1")(

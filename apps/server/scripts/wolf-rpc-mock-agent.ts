@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics globalTimers:off
 /**
  * Deterministic stand-in for `wolf --mode rpc`.
  *
@@ -44,8 +45,13 @@ function respond(
 }
 
 let steerCount = 0;
+// Mirrors Wolf: a turn is "streaming" from admission until it settles, and a
+// prompt that arrives mid-stream without a streamingBehavior is rejected.
+let streaming = false;
+let lastStreamingBehavior: string | null = null;
 
 function runTurn(): void {
+  streaming = true;
   send({ type: "agent_start" });
   send({ type: "turn_start" });
 
@@ -110,6 +116,7 @@ function runTurn(): void {
     toolResults: [],
   });
   send({ type: "agent_end", messages: [], willRetry: false });
+  streaming = false;
   send({ type: "agent_settled" }, exitAfterTurn ? () => NodeProcess.exit(0) : undefined);
 }
 
@@ -130,7 +137,29 @@ NodeProcess.stdin.on("data", (chunk: Buffer) => {
     }
     const id = typeof command.id === "string" ? command.id : undefined;
     switch (command.type) {
-      case "prompt":
+      case "prompt": {
+        const behavior =
+          typeof command.streamingBehavior === "string" ? command.streamingBehavior : null;
+        lastStreamingBehavior = behavior;
+        if (streaming && behavior === null) {
+          if (id !== undefined) {
+            send({
+              id,
+              type: "response",
+              command: "prompt",
+              success: false,
+              error:
+                "Agent is already processing. Specify streamingBehavior ('barge', 'steer', or 'followUp') to deliver the message.",
+            });
+          }
+          break;
+        }
+        if (streaming) {
+          // Steered into the running turn; it settles once, at the end.
+          steerCount += 1;
+          respond(id, "prompt");
+          break;
+        }
         if (exitOnPrompt) {
           NodeProcess.exit(1);
         }
@@ -140,16 +169,25 @@ NodeProcess.stdin.on("data", (chunk: Buffer) => {
           respond(id, "prompt", undefined, () => NodeProcess.exit(1));
           break;
         }
+        // A hung turn is still an admitted, processing turn: that is the state
+        // in which Wolf refuses a prompt that carries no streaming behavior.
+        streaming = true;
         respond(id, "prompt");
         if (!hangTurn) runTurn();
         break;
+      }
       case "steer":
         steerCount += 1;
         respond(id, "steer");
         break;
       case "abort":
         respond(id, "abort");
-        send({ type: "agent_settled" });
+        // Wolf winds a turn down asynchronously: it keeps streaming until the
+        // run actually settles. That window is when a bare prompt is refused.
+        setTimeout(() => {
+          streaming = false;
+          send({ type: "agent_settled" });
+        }, 120);
         break;
       case "set_model":
         respond(id, "set_model", { id: modelId });
@@ -163,7 +201,12 @@ NodeProcess.stdin.on("data", (chunk: Buffer) => {
         });
         break;
       case "get_state":
-        respond(id, "get_state", { model: { id: modelId }, isStreaming: false, steerCount });
+        respond(id, "get_state", {
+          model: { id: modelId },
+          isStreaming: streaming,
+          steerCount,
+          lastStreamingBehavior,
+        });
         break;
       default:
         respond(id, String(command.type ?? "unknown"));

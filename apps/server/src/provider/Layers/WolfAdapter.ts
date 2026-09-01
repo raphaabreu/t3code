@@ -445,7 +445,15 @@ export function makeWolfAdapter(wolfSettings: WolfSettings, options?: WolfAdapte
             });
           }
 
-          yield* ctx.client.request(steering ? "steer" : "prompt", { message: text });
+          // Always `prompt` with a steering behavior. Wolf consults
+          // `streamingBehavior` only when it is already streaming and ignores
+          // it when idle, so this is correct in both states — whereas choosing
+          // the command from our own in-flight count relies on that count
+          // agreeing with Wolf's actual state, and it does not after an
+          // interrupt: Wolf is still winding down and rejects a bare prompt
+          // with "Agent is already processing". `prompt` also accepts
+          // extension and slash commands, which the `steer` command refuses.
+          yield* ctx.client.request("prompt", { message: text, streamingBehavior: "steer" });
 
           const settle = ctx.settle;
           if (settle) yield* Deferred.await(settle);

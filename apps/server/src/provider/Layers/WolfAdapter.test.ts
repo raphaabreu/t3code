@@ -332,6 +332,53 @@ wolfAdapterTestLayer("WolfAdapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("delivers a follow-up sent while wolf is still winding down", () =>
+    Effect.gen(function* () {
+      // The reported failure: an interrupt drops our in-flight count while
+      // Wolf is still streaming, and a bare prompt is then refused with
+      // "Agent is already processing". The mock enforces that same guard.
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockWolfWrapper({ T3_WOLF_MOCK_HANG_TURN: "1" }),
+      );
+      const adapter = yield* makeAdapter(wrapperPath);
+      const events = yield* collectEvents(adapter);
+      const threadId = ThreadId.make("wolf-thread-midstream");
+
+      yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+      const first = yield* Effect.forkScoped(adapter.sendTurn({ threadId, input: "first" }));
+      yield* events.waitFor("turn.started");
+      yield* adapter.interruptTurn(threadId);
+      yield* Fiber.await(first);
+
+      const exit = yield* Effect.exit(adapter.sendTurn({ threadId, input: "second" }));
+      assert.isTrue(exit._tag === "Success");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("folds a prompt admitted mid-stream into the running turn", () =>
+    Effect.gen(function* () {
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockWolfWrapper({ T3_WOLF_MOCK_HANG_TURN: "1" }),
+      );
+      const adapter = yield* makeAdapter(wrapperPath);
+      const events = yield* collectEvents(adapter);
+      const threadId = ThreadId.make("wolf-thread-steered");
+
+      yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+      const first = yield* Effect.forkScoped(adapter.sendTurn({ threadId, input: "first" }));
+      const started = yield* events.waitFor("turn.started");
+
+      // A second turn while the first runs steers it: same turn id, and the
+      // mock would reject it outright without a streaming behavior.
+      const second = yield* Effect.forkScoped(adapter.sendTurn({ threadId, input: "second" }));
+      yield* adapter.interruptTurn(threadId);
+      yield* Fiber.await(first);
+      const result = yield* Fiber.await(second);
+      assert.isTrue(result._tag === "Success");
+      if (result._tag === "Success") assert.equal(result.value.turnId, started.turnId);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("rejects an empty turn before spawning any work", () =>
     Effect.gen(function* () {
       const wrapperPath = yield* Effect.promise(() => makeMockWolfWrapper());
