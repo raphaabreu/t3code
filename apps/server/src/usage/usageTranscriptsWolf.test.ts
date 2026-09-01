@@ -163,6 +163,81 @@ describe("parseWolfLine", () => {
     expect(parseWolfLine(titleLine, SESSION, state)?.model).toBe("anthropic/claude-sonnet-5");
   });
 
+  it("prefers a concrete assistant id over an alias declared by model_change", () => {
+    // Otherwise one model splits into two rows, and the alias row prices at $0.
+    const state = initialWolfScanState();
+    parseWolfLine(
+      JSON.stringify({
+        type: "model_change",
+        id: "mc",
+        provider: "anthropic-agent-sdk",
+        modelId: "opus",
+      }),
+      SESSION,
+      state,
+    );
+    parseWolfLine(
+      JSON.stringify({
+        type: "message",
+        id: "a1",
+        timestamp: "2026-08-29T16:18:59.320Z",
+        message: {
+          role: "assistant",
+          content: [],
+          provider: "anthropic-agent-sdk",
+          model: "opus",
+          responseModel: "claude-opus-4-8",
+          usage: { input: 10, output: 2 },
+        },
+      }),
+      SESSION,
+      state,
+    );
+    expect(parseWolfLine(titleLine, SESSION, state)?.model).toBe(
+      "anthropic-agent-sdk/claude-opus-4-8",
+    );
+  });
+
+  it("does not let a synthesized message downgrade a resolved id", () => {
+    const state = initialWolfScanState();
+    parseWolfLine(
+      JSON.stringify({
+        type: "message",
+        id: "a1",
+        timestamp: "2026-08-29T16:18:59.320Z",
+        message: {
+          role: "assistant",
+          content: [],
+          provider: "anthropic",
+          model: "opus",
+          responseModel: "claude-opus-4-8",
+          usage: { input: 10, output: 2 },
+        },
+      }),
+      SESSION,
+      state,
+    );
+    parseWolfLine(
+      JSON.stringify({
+        type: "message",
+        id: "syn",
+        timestamp: "2026-08-29T16:19:00.000Z",
+        message: {
+          role: "assistant",
+          content: [],
+          provider: "anthropic",
+          model: "opus",
+          responseModel: "<synthetic>",
+          usage: { input: 5, output: 1 },
+        },
+      }),
+      SESSION,
+      state,
+    );
+    expect(state.resolvedModel).toBe("anthropic/claude-opus-4-8");
+    expect(parseWolfLine(titleLine, SESSION, state)?.model).toBe("anthropic/claude-opus-4-8");
+  });
+
   it("falls back to unknown when nothing established a model first", () => {
     expect(parseWolfLine(titleLine, SESSION, initialWolfScanState())?.model).toBe("unknown");
   });
@@ -172,8 +247,8 @@ describe("parseWolfLine", () => {
     // one session's compaction to another session's model.
     const first = initialWolfScanState();
     parseWolfLine(assistantLine, SESSION, first);
-    expect(first.activeModel).toBe("openai-codex/gpt-5.6-sol");
-    expect(initialWolfScanState().activeModel).toBeUndefined();
+    expect(first.resolvedModel).toBe("openai-codex/gpt-5.6-sol");
+    expect(initialWolfScanState().resolvedModel).toBeUndefined();
   });
 
   it("ignores user messages and entries without usage", () => {

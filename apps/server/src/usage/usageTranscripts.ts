@@ -378,11 +378,14 @@ const WOLF_USAGE_ENTRY_TYPES = new Set(["message", "session_title", "session_goa
  * Codex parser takes with `turn_context`.
  */
 export interface WolfScanState {
-  activeModel: string | undefined;
+  /** Concrete id resolved from an assistant message. Preferred. */
+  resolvedModel: string | undefined;
+  /** Id declared by `model_change`, which is frequently an alias. */
+  declaredModel: string | undefined;
 }
 
 export function initialWolfScanState(): WolfScanState {
-  return { activeModel: undefined };
+  return { resolvedModel: undefined, declaredModel: undefined };
 }
 
 /**
@@ -402,13 +405,19 @@ function qualifiedWolfModel(provider: unknown, modelId: unknown): string | undef
  * same reason. `responseModel` is also a placeholder (`<synthetic>`) on locally
  * synthesized messages, which names no model and must not become its own row.
  */
-function wolfMessageModel(message: Record<string, unknown> | null | undefined): string | undefined {
+function wolfMessageModel(message: Record<string, unknown> | null | undefined): {
+  readonly model: string | undefined;
+  /** False when the id came from the alias fallback on a placeholder. */
+  readonly authoritative: boolean;
+} {
   const responseModel = message?.["responseModel"];
+  const placeholder = typeof responseModel === "string" && responseModel.startsWith("<");
   const resolved =
-    typeof responseModel === "string" && !responseModel.startsWith("<")
-      ? responseModel
-      : message?.["model"];
-  return qualifiedWolfModel(message?.["provider"], resolved);
+    typeof responseModel === "string" && !placeholder ? responseModel : message?.["model"];
+  return {
+    model: qualifiedWolfModel(message?.["provider"], resolved),
+    authoritative: !placeholder,
+  };
 }
 
 function readWolfUsageTotals(raw: unknown): UsageTokenTotals | null {
@@ -462,8 +471,8 @@ export function parseWolfLine(
 
   // Carries no usage of its own; it only moves the active model forward.
   if (entryType === "model_change") {
-    const changed = qualifiedWolfModel(entry["provider"], entry["modelId"]);
-    if (changed) state.activeModel = changed;
+    const declared = qualifiedWolfModel(entry["provider"], entry["modelId"]);
+    if (declared) state.declaredModel = declared;
     return null;
   }
 
@@ -488,8 +497,10 @@ export function parseWolfLine(
   // active model; the other entry kinds inherit it, since Wolf bills them at
   // that model's rate without recording which one it was.
   const stamped = wolfMessageModel(messageRecord);
-  if (stamped) state.activeModel = stamped;
-  const model = stamped ?? state.activeModel ?? "unknown";
+  // A placeholder resolution must not downgrade an already-concrete id.
+  if (stamped.model && stamped.authoritative) state.resolvedModel = stamped.model;
+  // Prefer a concrete id over a declaration, which is frequently an alias.
+  const model = stamped.model ?? state.resolvedModel ?? state.declaredModel ?? "unknown";
 
   const entryId = entry["id"];
   return {
