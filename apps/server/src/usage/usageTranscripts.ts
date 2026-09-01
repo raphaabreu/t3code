@@ -369,6 +369,31 @@ function grokTotalsToUsage(totals: GrokUsageTotals): UsageTokenTotals {
  */
 const WOLF_USAGE_ENTRY_TYPES = new Set(["message", "session_title", "session_goal", "compaction"]);
 
+/**
+ * Carries the session's active model across lines.
+ *
+ * Wolf stamps assistant messages with their own model but writes titles, goals,
+ * and compaction summaries without one, even though it bills them at the active
+ * model's rate. Tracking the model as the file streams is the same approach the
+ * Codex parser takes with `turn_context`.
+ */
+export interface WolfScanState {
+  activeModel: string | undefined;
+}
+
+export function initialWolfScanState(): WolfScanState {
+  return { activeModel: undefined };
+}
+
+/**
+ * Wolf model ids are unique only within a provider, so usage is keyed by the
+ * `provider/id` pair the CLI itself accepts.
+ */
+function qualifiedWolfModel(provider: unknown, modelId: unknown): string | undefined {
+  if (typeof modelId !== "string" || modelId.length === 0) return undefined;
+  return typeof provider === "string" && provider.length > 0 ? `${provider}/${modelId}` : modelId;
+}
+
 function readWolfUsageTotals(raw: unknown): UsageTokenTotals | null {
   if (typeof raw !== "object" || raw === null) return null;
   const usage = raw as Record<string, unknown>;
@@ -401,7 +426,11 @@ function readWolfCostUsd(raw: unknown): number | null {
  * across forks and branch switches, which duplicate ancestry by reference
  * rather than by rewriting entries.
  */
-export function parseWolfLine(line: string, sessionIdFallback: string): UsageRecord | null {
+export function parseWolfLine(
+  line: string,
+  sessionIdFallback: string,
+  state: WolfScanState,
+): UsageRecord | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -412,7 +441,16 @@ export function parseWolfLine(line: string, sessionIdFallback: string): UsageRec
   const entry = parsed as Record<string, unknown>;
 
   const entryType = entry["type"];
-  if (typeof entryType !== "string" || !WOLF_USAGE_ENTRY_TYPES.has(entryType)) return null;
+  if (typeof entryType !== "string") return null;
+
+  // Carries no usage of its own; it only moves the active model forward.
+  if (entryType === "model_change") {
+    const changed = qualifiedWolfModel(entry["provider"], entry["modelId"]);
+    if (changed) state.activeModel = changed;
+    return null;
+  }
+
+  if (!WOLF_USAGE_ENTRY_TYPES.has(entryType)) return null;
 
   // An assistant message nests usage and model under `message`; the other
   // entry kinds carry usage at the top level.
@@ -429,16 +467,12 @@ export function parseWolfLine(line: string, sessionIdFallback: string): UsageRec
   const timestampMs = typeof timestamp === "string" ? Date.parse(timestamp) : Number.NaN;
   if (!Number.isFinite(timestampMs)) return null;
 
-  // Wolf model ids are unique only within a provider, matching the
-  // `provider/id` slug the adapter and model picker use.
-  const modelId = messageRecord?.["model"];
-  const providerId = messageRecord?.["provider"];
-  const model =
-    typeof modelId === "string" && modelId.length > 0
-      ? typeof providerId === "string" && providerId.length > 0
-        ? `${providerId}/${modelId}`
-        : modelId
-      : "unknown";
+  // An assistant message names its own model and also advances the session's
+  // active model; the other entry kinds inherit it, since Wolf bills them at
+  // that model's rate without recording which one it was.
+  const stamped = qualifiedWolfModel(messageRecord?.["provider"], messageRecord?.["model"]);
+  if (stamped) state.activeModel = stamped;
+  const model = stamped ?? state.activeModel ?? "unknown";
 
   const entryId = entry["id"];
   return {

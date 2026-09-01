@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { mightCarryUsage, parseWolfLine } from "./usageTranscripts.ts";
+import { initialWolfScanState, mightCarryUsage, parseWolfLine } from "./usageTranscripts.ts";
 
 const SESSION = "01a04e4f-f3f3-7f20-bf91-7496695bed4d";
 
@@ -60,7 +60,7 @@ describe("mightCarryUsage for wolf", () => {
 
 describe("parseWolfLine", () => {
   it("maps an assistant message onto token totals and provider-reported cost", () => {
-    const record = parseWolfLine(assistantLine, SESSION);
+    const record = parseWolfLine(assistantLine, SESSION, initialWolfScanState());
     expect(record).not.toBeNull();
     expect(record?.provider).toBe("wolf");
     expect(record?.model).toBe("openai-codex/gpt-5.6-sol");
@@ -77,17 +77,72 @@ describe("parseWolfLine", () => {
   });
 
   it("counts model calls wolf makes on its own behalf", () => {
-    const record = parseWolfLine(titleLine, SESSION);
+    const record = parseWolfLine(titleLine, SESSION, initialWolfScanState());
     expect(record?.totals.uncachedInputTokens).toBe(8456);
     expect(record?.reportedCostUsd).toBe(0.04258);
   });
 
-  it("ignores user messages and entries without usage", () => {
-    expect(parseWolfLine(userLine, SESSION)).toBeNull();
+  it("attributes a title to the model named by a preceding model_change", () => {
+    // Wolf omits the model on title/compaction entries but bills them at the
+    // active model's rate, so the scan carries it forward.
+    const state = initialWolfScanState();
     expect(
       parseWolfLine(
-        JSON.stringify({ type: "model_change", id: "a", timestamp: "2026-08-29T16:17:37.816Z" }),
+        JSON.stringify({
+          type: "model_change",
+          id: "mc",
+          timestamp: "2026-08-29T16:17:37.816Z",
+          provider: "openai-codex",
+          modelId: "gpt-5.6-sol",
+        }),
         SESSION,
+        state,
+      ),
+    ).toBeNull();
+    expect(parseWolfLine(titleLine, SESSION, state)?.model).toBe("openai-codex/gpt-5.6-sol");
+  });
+
+  it("lets a later assistant message move the active model", () => {
+    const state = initialWolfScanState();
+    parseWolfLine(assistantLine, SESSION, state);
+    expect(parseWolfLine(titleLine, SESSION, state)?.model).toBe("openai-codex/gpt-5.6-sol");
+
+    const switched = JSON.stringify({
+      type: "message",
+      id: "switched",
+      timestamp: "2026-08-29T16:20:00.000Z",
+      message: {
+        role: "assistant",
+        content: [],
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        usage: { input: 5, output: 1 },
+      },
+    });
+    expect(parseWolfLine(switched, SESSION, state)?.model).toBe("anthropic/claude-sonnet-5");
+    expect(parseWolfLine(titleLine, SESSION, state)?.model).toBe("anthropic/claude-sonnet-5");
+  });
+
+  it("falls back to unknown when nothing established a model first", () => {
+    expect(parseWolfLine(titleLine, SESSION, initialWolfScanState())?.model).toBe("unknown");
+  });
+
+  it("does not leak the active model between files", () => {
+    // The reader builds fresh state per transcript; sharing it would attribute
+    // one session's compaction to another session's model.
+    const first = initialWolfScanState();
+    parseWolfLine(assistantLine, SESSION, first);
+    expect(first.activeModel).toBe("openai-codex/gpt-5.6-sol");
+    expect(initialWolfScanState().activeModel).toBeUndefined();
+  });
+
+  it("ignores user messages and entries without usage", () => {
+    expect(parseWolfLine(userLine, SESSION, initialWolfScanState())).toBeNull();
+    expect(
+      parseWolfLine(
+        JSON.stringify({ type: "thinking_level_change", id: "a" }),
+        SESSION,
+        initialWolfScanState(),
       ),
     ).toBeNull();
   });
@@ -106,14 +161,18 @@ describe("parseWolfLine", () => {
         stopReason: "error",
       },
     });
-    expect(parseWolfLine(line, SESSION)).toBeNull();
+    expect(parseWolfLine(line, SESSION, initialWolfScanState())).toBeNull();
   });
 
   it("keys dedupe on the entry id so a forked branch is not double-counted", () => {
     // Wolf sessions are append-only trees; a fork copies ancestry by
     // reference, so the same entry id must resolve to one billed call.
-    expect(parseWolfLine(assistantLine, SESSION)?.dedupeKey).toBe("wolf:cf0299ac");
-    expect(parseWolfLine(assistantLine, "other-session")?.dedupeKey).toBe("wolf:cf0299ac");
+    expect(parseWolfLine(assistantLine, SESSION, initialWolfScanState())?.dedupeKey).toBe(
+      "wolf:cf0299ac",
+    );
+    expect(parseWolfLine(assistantLine, "other-session", initialWolfScanState())?.dedupeKey).toBe(
+      "wolf:cf0299ac",
+    );
   });
 
   it("falls back to the bare model id when no provider is recorded", () => {
@@ -128,14 +187,18 @@ describe("parseWolfLine", () => {
         usage: { input: 10, output: 1 },
       },
     });
-    expect(parseWolfLine(line, SESSION)?.model).toBe("gpt-5.6-sol");
+    expect(parseWolfLine(line, SESSION, initialWolfScanState())?.model).toBe("gpt-5.6-sol");
   });
 
   it("rejects malformed lines rather than throwing", () => {
-    expect(parseWolfLine("not json", SESSION)).toBeNull();
-    expect(parseWolfLine("null", SESSION)).toBeNull();
+    expect(parseWolfLine("not json", SESSION, initialWolfScanState())).toBeNull();
+    expect(parseWolfLine("null", SESSION, initialWolfScanState())).toBeNull();
     expect(
-      parseWolfLine(JSON.stringify({ type: "message", message: { role: "assistant" } }), SESSION),
+      parseWolfLine(
+        JSON.stringify({ type: "message", message: { role: "assistant" } }),
+        SESSION,
+        initialWolfScanState(),
+      ),
     ).toBeNull();
   });
 });

@@ -23,6 +23,7 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  initialWolfScanState,
   parseWolfLine,
   type UsageRecord,
 } from "./usageTranscripts.ts";
@@ -123,6 +124,7 @@ export async function readTranscriptRecords(
   // Wolf writes one session per file and repeats no session id on its entries,
   // so the file name carries the identity records are grouped by.
   const wolfSessionId = NodePath.basename(filePath, ".jsonl");
+  const wolfState = initialWolfScanState();
 
   try {
     const lines = NodeReadline.createInterface({
@@ -151,8 +153,10 @@ export async function readTranscriptRecords(
       }
 
       if (provider === "wolf") {
-        if (!mightCarryUsage(line, provider)) continue;
-        const wolfRecord = parseWolfLine(line, wolfSessionId);
+        // `model_change` carries no usage but sets the model that later titles
+        // and compaction summaries are billed at, so it must reach the parser.
+        if (!mightCarryUsage(line, provider) && !line.includes('"model_change"')) continue;
+        const wolfRecord = parseWolfLine(line, wolfSessionId, wolfState);
         if (wolfRecord !== null) records.push(wolfRecord);
         continue;
       }
