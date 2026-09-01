@@ -2187,7 +2187,16 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           schemes: ["t3code", "t3code-dev"],
         },
       ],
-      ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
+      ...(signed
+        ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") }
+        : {
+            // Electron's downloaded binaries arrive signed. Skipping bundle
+            // signing after packaging leaves those nested signatures referring
+            // to resources that no longer match, which makes a local DMG look
+            // damaged. Ad-hoc sign the complete local bundle instead.
+            identity: "-",
+            hardenedRuntime: false,
+          }),
       ...(macPasskeySigning
         ? {
             entitlements: macPasskeySigning.entitlementsPath,

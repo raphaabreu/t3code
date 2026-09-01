@@ -18,9 +18,11 @@ import {
   type OrchestrationThread,
   type OrchestrationThreadActivity,
   type ProviderRuntimeEvent,
+  type ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -45,6 +47,7 @@ import { projectActivityPayload } from "../ActivityPayloadProjection.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { canReplaceThreadTitle } from "../threadTitles.ts";
+import { AutomaticCredentialSelector } from "../Services/AutomaticCredentialSelector.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
@@ -100,6 +103,106 @@ const TASK_DESCRIPTION_BY_TASK_CACHE_CAPACITY = 10_000;
 const TASK_DESCRIPTION_BY_TASK_TTL = Duration.minutes(120);
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
+const AUTOMATIC_CREDENTIAL_RETRY_FALLBACK_MS = 20 * 60 * 1_000;
+const AUTOMATIC_USAGE_SIGNAL_PAIRING_MS = 2 * 60 * 1_000;
+const AUTOMATIC_FAILOVER_MESSAGE_PREFIX = "[Automatic credential failover]";
+
+type UsageLimitSignal = {
+  readonly instanceId: ProviderInstanceId;
+  readonly retryAt?: number | undefined;
+};
+
+type RememberedUsageLimitSignal = UsageLimitSignal & {
+  readonly turnId?: TurnId | undefined;
+  readonly observedAt: number;
+};
+
+function asUnknownRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function normalizeRetryAt(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  return value < 10_000_000_000 ? value * 1_000 : value;
+}
+
+function findRetryAt(value: unknown, depth = 0): number | undefined {
+  if (depth > 5) return undefined;
+  const record = asUnknownRecord(value);
+  if (!record) return undefined;
+  for (const key of ["resetsAt", "resetAt", "reset_at", "resets_at"] as const) {
+    const retryAt = normalizeRetryAt(record[key]);
+    if (retryAt !== undefined) return retryAt;
+  }
+  for (const nested of Object.values(record)) {
+    const retryAt = findRetryAt(nested, depth + 1);
+    if (retryAt !== undefined) return retryAt;
+  }
+  return undefined;
+}
+
+function hasTerminalStructuredUsageLimit(value: unknown, depth = 0): boolean {
+  if (depth > 6) return false;
+  const record = asUnknownRecord(value);
+  if (!record) return false;
+
+  const terminalStrings = new Set([
+    "rejected",
+    "rate_limit_reached",
+    "credits_depleted",
+    "usage_limit_reached",
+    "workspace_owner_credits_depleted",
+    "workspace_member_credits_depleted",
+    "workspace_owner_usage_limit_reached",
+    "workspace_member_usage_limit_reached",
+  ]);
+  for (const key of ["status", "rateLimitReachedType", "rate_limit_reached_type"] as const) {
+    const candidate = record[key];
+    if (typeof candidate === "string" && terminalStrings.has(candidate.toLowerCase())) {
+      return true;
+    }
+  }
+  if (record.spendControlReached === true || record.spend_control_reached === true) return true;
+  const credits = asUnknownRecord(record.credits);
+  if (credits?.hasCredits === false || credits?.has_credits === false) return true;
+  return Object.values(record).some((nested) => hasTerminalStructuredUsageLimit(nested, depth + 1));
+}
+
+export function isExplicitUsageLimitMessage(value: string | undefined): boolean {
+  if (!value) return false;
+  return /(?:\b429\b|rate[ -]?limit|usage limit|weekly limit|credits? (?:are )?(?:depleted|exhausted)|out of credits)/i.test(
+    value,
+  );
+}
+
+export function usageLimitSignalFromRuntimeEvent(
+  event: ProviderRuntimeEvent,
+): UsageLimitSignal | undefined {
+  const instanceId = event.providerInstanceId;
+  if (!instanceId) return undefined;
+  if (
+    event.type === "account.rate-limits.updated" &&
+    hasTerminalStructuredUsageLimit(event.payload.rateLimits)
+  ) {
+    const retryAt = findRetryAt(event.payload.rateLimits);
+    return { instanceId, ...(retryAt !== undefined ? { retryAt } : {}) };
+  }
+  if (event.type === "runtime.error" && isExplicitUsageLimitMessage(event.payload.message)) {
+    const retryAt = findRetryAt(event.payload.detail);
+    return { instanceId, ...(retryAt !== undefined ? { retryAt } : {}) };
+  }
+  if (
+    event.type === "turn.completed" &&
+    event.payload.state === "failed" &&
+    isExplicitUsageLimitMessage(event.payload.errorMessage)
+  ) {
+    const retryAt = findRetryAt(event.payload.usage);
+    return { instanceId, ...(retryAt !== undefined ? { retryAt } : {}) };
+  }
+  return undefined;
+}
 
 type TurnStartRequestedDomainEvent = Extract<
   OrchestrationEvent,
@@ -894,8 +997,15 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
+  const automaticCredentialSelector = yield* AutomaticCredentialSelector;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
+  const usageLimitSignalsByThread = new Map<ThreadId, RememberedUsageLimitSignal>();
+  const handledAutomaticFailovers = yield* Cache.make<string, true>({
+    capacity: 10_000,
+    timeToLive: Duration.hours(2),
+    lookup: () => Effect.succeed(true),
+  });
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
     crypto.randomUUIDv4.pipe(
       Effect.map((uuid) => CommandId.make(`provider:${event.eventId}:${tag}:${uuid}`)),
@@ -2045,8 +2155,133 @@ const make = Effect.gen(function* () {
 
   const processDomainEvent = (_event: TurnStartRequestedDomainEvent) => Effect.void;
 
+  const maybeHandleAutomaticCredentialFailover = Effect.fn(
+    "ProviderRuntimeIngestion.maybeHandleAutomaticCredentialFailover",
+  )(function* (event: ProviderRuntimeEvent) {
+    const directSignal = usageLimitSignalFromRuntimeEvent(event);
+    if (directSignal) {
+      const now = yield* Clock.currentTimeMillis;
+      const previousSignal = usageLimitSignalsByThread.get(event.threadId);
+      const previousMatchesTurn =
+        previousSignal?.instanceId === directSignal.instanceId &&
+        (previousSignal.turnId === undefined ||
+          event.turnId === undefined ||
+          previousSignal.turnId === event.turnId);
+      const retryAt =
+        directSignal.retryAt ??
+        (previousMatchesTurn ? previousSignal.retryAt : undefined) ??
+        now + AUTOMATIC_CREDENTIAL_RETRY_FALLBACK_MS;
+      usageLimitSignalsByThread.set(event.threadId, {
+        ...directSignal,
+        retryAt,
+        observedAt: now,
+        ...(event.turnId !== undefined ? { turnId: event.turnId } : {}),
+      });
+      yield* automaticCredentialSelector.markUnavailable({
+        instanceId: directSignal.instanceId,
+        retryAt,
+      });
+    }
+
+    // Turn-scoped adapters can emit runtime.error before their authoritative
+    // turn.completed event. Waiting for the completion avoids starting the
+    // replacement session while the failed session is still unwinding.
+    const isTerminalFailure =
+      (event.type === "runtime.error" && event.turnId === undefined) ||
+      (event.type === "turn.completed" && event.payload.state === "failed") ||
+      (event.type === "session.state.changed" &&
+        event.payload.state === "error" &&
+        event.turnId === undefined) ||
+      (event.type === "session.exited" &&
+        event.payload.exitKind === "error" &&
+        event.turnId === undefined);
+    if (!isTerminalFailure) return;
+
+    const now = yield* Clock.currentTimeMillis;
+    const rememberedCandidate = usageLimitSignalsByThread.get(event.threadId);
+    const rememberedSignal =
+      rememberedCandidate &&
+      rememberedCandidate.retryAt !== undefined &&
+      rememberedCandidate.retryAt > now &&
+      (rememberedCandidate.turnId === event.turnId ||
+        ((rememberedCandidate.turnId === undefined || event.turnId === undefined) &&
+          now - rememberedCandidate.observedAt <= AUTOMATIC_USAGE_SIGNAL_PAIRING_MS))
+        ? rememberedCandidate
+        : undefined;
+    if (rememberedCandidate && !rememberedSignal) {
+      usageLimitSignalsByThread.delete(event.threadId);
+    }
+    const signal = directSignal
+      ? {
+          ...directSignal,
+          ...(directSignal.retryAt === undefined && rememberedSignal?.retryAt !== undefined
+            ? { retryAt: rememberedSignal.retryAt }
+            : {}),
+        }
+      : rememberedSignal;
+    if (!signal) return;
+    if (event.providerInstanceId !== undefined && event.providerInstanceId !== signal.instanceId) {
+      return;
+    }
+
+    const thread = yield* resolveThreadDetail(event.threadId);
+    if (!thread || thread.modelSelection.credentialMode !== "automatic") return;
+    if (
+      thread.session?.providerInstanceId !== undefined &&
+      thread.session.providerInstanceId !== signal.instanceId
+    ) {
+      return;
+    }
+
+    const failoverKey = `${event.threadId}:${signal.instanceId}:${event.turnId ?? "session"}`;
+    const alreadyHandled = yield* Cache.getOption(handledAutomaticFailovers, failoverKey);
+    if (Option.isSome(alreadyHandled)) return;
+    yield* Cache.set(handledAutomaticFailovers, failoverKey, true);
+
+    const originalUserMessage = thread.messages
+      .toReversed()
+      .find(
+        (message) =>
+          message.role === "user" && !message.text.startsWith(AUTOMATIC_FAILOVER_MESSAGE_PREFIX),
+      );
+    const continuationMessage = [
+      AUTOMATIC_FAILOVER_MESSAGE_PREFIX,
+      "The previous credential reached its usage limit. Continue the interrupted request from the last completed step without repeating completed work.",
+      ...(originalUserMessage?.text.trim()
+        ? ["Original request:", originalUserMessage.text.trim()]
+        : []),
+    ].join("\n\n");
+
+    yield* orchestrationEngine.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make(`provider:auto-credential-failover:${event.eventId}`),
+      threadId: thread.id,
+      message: {
+        messageId: MessageId.make(`auto-credential-failover:${event.eventId}`),
+        role: "user",
+        text: continuationMessage,
+        attachments: [],
+      },
+      modelSelection: thread.modelSelection,
+      runtimeMode: thread.runtimeMode,
+      interactionMode: thread.interactionMode,
+      createdAt: event.createdAt,
+    });
+    usageLimitSignalsByThread.delete(event.threadId);
+    yield* Effect.logInfo("automatic credential failover requested", {
+      threadId: thread.id,
+      failedInstanceId: signal.instanceId,
+      eventType: event.type,
+      retryAt: signal.retryAt,
+    });
+  });
+
   const processInput = (input: RuntimeIngestionInput) =>
-    input.source === "runtime" ? processRuntimeEvent(input.event) : processDomainEvent(input.event);
+    input.source === "runtime"
+      ? processRuntimeEvent(input.event).pipe(
+          Effect.andThen(maybeHandleAutomaticCredentialFailover(input.event)),
+        )
+      : processDomainEvent(input.event);
 
   const processInputSafely = (input: RuntimeIngestionInput) =>
     processInput(input).pipe(

@@ -6796,6 +6796,35 @@ function ChatViewContent(props: ChatViewProps) {
       settings,
     ],
   );
+  const onCredentialModeChange = useCallback(
+    (mode: "automatic" | null) => {
+      if (!activeThread) return;
+      const currentSelection = composerRef.current?.getSendContext().selectedModelSelection;
+      if (!currentSelection) return;
+      const nextModelSelection: ModelSelection =
+        mode === "automatic"
+          ? { ...currentSelection, credentialMode: "automatic" }
+          : {
+              instanceId: currentSelection.instanceId,
+              model: currentSelection.model,
+              ...(currentSelection.options ? { options: currentSelection.options } : {}),
+            };
+      setComposerDraftModelSelection(
+        scopeThreadRef(activeThread.environmentId, activeThread.id),
+        nextModelSelection,
+        { explicit: true },
+      );
+      setStickyComposerModelSelection(nextModelSelection);
+      scheduleComposerFocus();
+    },
+    [
+      activeThread,
+      composerRef,
+      scheduleComposerFocus,
+      setComposerDraftModelSelection,
+      setStickyComposerModelSelection,
+    ],
+  );
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
       if (canOverrideServerThreadEnvMode) {
@@ -7312,6 +7341,7 @@ function ChatViewContent(props: ChatViewProps) {
                               onChangeActivePendingUserInputCustomAnswer
                             }
                             onProviderModelSelect={onProviderModelSelect}
+                            onCredentialModeChange={onCredentialModeChange}
                             getModelDisabledReason={getModelDisabledReason}
                             toggleInteractionMode={toggleInteractionMode}
                             handleRuntimeModeChange={handleRuntimeModeChange}

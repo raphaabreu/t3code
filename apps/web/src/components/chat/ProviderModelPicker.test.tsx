@@ -6,7 +6,7 @@ import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import type { ModelEsque } from "./providerIconUtils";
 
-function providerEntry(instanceId: string, driver: string) {
+function providerEntry(instanceId: string, driver: string, displayName?: string) {
   const provider: ServerProvider = {
     instanceId: ProviderInstanceId.make(instanceId),
     driver: ProviderDriverKind.make(driver),
@@ -19,6 +19,7 @@ function providerEntry(instanceId: string, driver: string) {
     models: [],
     slashCommands: [],
     skills: [],
+    ...(displayName ? { displayName } : {}),
   };
   return deriveProviderInstanceEntries([provider])[0]!;
 }
@@ -29,9 +30,12 @@ function renderPicker(input: {
   model: string;
   options: ReadonlyArray<ModelEsque>;
   includeEntry?: boolean;
+  credentialMode?: "automatic";
+  showActiveInstanceName?: boolean;
+  displayName?: string;
 }) {
   const instanceId = ProviderInstanceId.make(input.instanceId);
-  const entry = providerEntry(input.instanceId, input.driver);
+  const entry = providerEntry(input.instanceId, input.driver, input.displayName);
   return renderToStaticMarkup(
     <ProviderModelPicker
       activeInstanceId={instanceId}
@@ -39,6 +43,8 @@ function renderPicker(input: {
       lockedProvider={null}
       instanceEntries={input.includeEntry === false ? [] : [entry]}
       modelOptionsByInstance={new Map([[instanceId, input.options]])}
+      credentialMode={input.credentialMode}
+      {...(input.showActiveInstanceName ? { showActiveInstanceName: true } : {})}
       onInstanceModelChange={() => {}}
     />,
   );
@@ -98,5 +104,34 @@ describe("ProviderModelPicker", () => {
 
     expect(markup).toContain("Fallback model");
     expect(markup).not.toContain(">missing-model<");
+  });
+
+  it("shows when automatic credential failover is enabled", () => {
+    const markup = renderPicker({
+      instanceId: "codex_work",
+      driver: "codex",
+      model: "gpt-5.4",
+      options: [{ slug: "gpt-5.4", name: "GPT-5.4" }],
+      credentialMode: "automatic",
+    });
+
+    expect(markup).toContain(">Auto<");
+  });
+
+  it("shows the active credential profile name when requested", () => {
+    const markup = renderPicker({
+      instanceId: "claude_aline_profile",
+      driver: "claudeAgent",
+      model: "claude-opus-5",
+      options: [{ slug: "claude-opus-5", name: "Claude Opus 5" }],
+      credentialMode: "automatic",
+      showActiveInstanceName: true,
+      displayName: "Claude · aline.lorenzeto@gmail.com",
+    });
+
+    expect(markup).toContain('data-chat-provider-profile-name="true"');
+    expect(markup).toContain(">aline.lorenzeto@gmail.com</span>");
+    expect(markup).not.toContain(">Claude · aline.lorenzeto@gmail.com</span>");
+    expect(markup).toContain(">Auto<");
   });
 });

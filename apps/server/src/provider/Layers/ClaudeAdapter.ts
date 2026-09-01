@@ -420,10 +420,30 @@ function resultErrorsText(result: SDKResultMessage): string {
  * so they must never become the error banner.
  */
 function resultUserFacingError(result: SDKResultMessage): string | undefined {
-  if (result.subtype === "success" || !Array.isArray(result.errors)) {
-    return undefined;
+  if (result.subtype === "success") {
+    if (!isClaudeApiErrorResult(result)) return undefined;
+
+    const resultMessage = result.result.trim();
+    if (resultMessage.length > 0) return resultMessage;
+
+    return typeof result.api_error_status === "number"
+      ? `Claude API request failed (HTTP ${result.api_error_status}).`
+      : "Claude API request failed.";
   }
+  if (!Array.isArray(result.errors)) return undefined;
   return result.errors.find((error) => !error.startsWith("[ede_diagnostic]"));
+}
+
+function isClaudeApiErrorResult(result: SDKResultMessage): boolean {
+  if (result.subtype !== "success") return false;
+
+  // Claude can report an API failure in a `subtype: "success"` envelope.
+  // The structured fields, not the envelope subtype, are authoritative.
+  return (
+    result.is_error === true ||
+    (typeof result.api_error_status === "number" && result.api_error_status >= 400) ||
+    String(result.terminal_reason) === "api_error"
+  );
 }
 
 function isInterruptedResult(result: SDKResultMessage): boolean {
@@ -1341,14 +1361,14 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
 });
 
 function turnStatusFromResult(result: SDKResultMessage): ProviderRuntimeTurnStatus {
-  if (result.subtype === "success") {
-    return "completed";
-  }
-
-  const errors = resultErrorsText(result);
   if (isInterruptedResult(result)) {
     return "interrupted";
   }
+  if (result.subtype === "success") {
+    return isClaudeApiErrorResult(result) ? "failed" : "completed";
+  }
+
+  const errors = resultErrorsText(result);
   if (errors.includes("cancel")) {
     return "cancelled";
   }

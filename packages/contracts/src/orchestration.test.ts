@@ -1030,6 +1030,22 @@ it.effect("ModelSelection accepts an explicit instanceId routing key", () =>
   }),
 );
 
+it.effect("ModelSelection round-trips automatic credential mode", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeModelSelection({
+      instanceId: "ccp_personal_12345678",
+      model: "claude-opus-4-6",
+      credentialMode: "automatic",
+    });
+    assert.strictEqual(parsed.credentialMode, "automatic");
+    assert.deepStrictEqual(yield* encodeModelSelection(parsed), {
+      instanceId: "ccp_personal_12345678",
+      model: "claude-opus-4-6",
+      credentialMode: "automatic",
+    });
+  }),
+);
+
 it.effect("ModelSelection prefers explicit instanceId over legacy provider", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeModelSelection({

@@ -1,4 +1,5 @@
 import {
+  PROVIDER_DISPLAY_NAMES,
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
@@ -35,8 +36,10 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
   activeProviderIconClassName?: string;
   compact?: boolean;
+  showActiveInstanceName?: boolean;
   disabled?: boolean;
   terminalOpen?: boolean;
+  credentialMode?: "automatic" | undefined;
   open?: boolean;
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"];
   triggerClassName?: string;
@@ -44,6 +47,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   onOpenChange?: (open: boolean) => void;
   getModelDisabledReason?: (instanceId: ProviderInstanceId, model: string) => string | null;
   onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
+  onCredentialModeChange?: (mode: "automatic" | null) => void;
 }) {
   const [uncontrolledIsMenuOpen, setUncontrolledIsMenuOpen] = useState(false);
   const isMenuOpen = props.open ?? uncontrolledIsMenuOpen;
@@ -70,6 +74,14 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     : props.model;
   const showInstanceBadge =
     activeEntry !== null && shouldShowInstanceBadge(activeEntry, props.instanceEntries);
+  const activeInstanceProfileName = (() => {
+    if (!activeEntry) return null;
+    const providerName = PROVIDER_DISPLAY_NAMES[activeEntry.driverKind];
+    const providerPrefix = providerName ? `${providerName} · ` : null;
+    return providerPrefix && activeEntry.displayName.startsWith(providerPrefix)
+      ? activeEntry.displayName.slice(providerPrefix.length)
+      : activeEntry.displayName;
+  })();
 
   const setIsMenuOpen = (open: boolean) => {
     props.onOpenChange?.(open);
@@ -151,7 +163,13 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             data-chat-provider-model-picker="true"
             className={cn(
               "min-w-0 justify-between whitespace-nowrap",
-              props.compact ? "max-w-42 shrink-0" : "max-w-48 shrink sm:max-w-56",
+              props.showActiveInstanceName
+                ? props.compact
+                  ? "max-w-80 shrink-0"
+                  : "max-w-[28rem] shrink sm:max-w-[32rem]"
+                : props.compact
+                  ? "max-w-42 shrink-0"
+                  : "max-w-48 shrink sm:max-w-56",
               props.triggerClassName,
             )}
             disabled={props.disabled}
@@ -185,6 +203,22 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
               Unavailable
             </Badge>
           ) : null}
+          {props.credentialMode === "automatic" ? (
+            <Badge variant="outline" size="sm">
+              Auto
+            </Badge>
+          ) : null}
+          {props.showActiveInstanceName && activeEntry ? (
+            <Badge
+              variant="secondary"
+              size="sm"
+              className="min-w-0 max-w-64 shrink"
+              data-chat-provider-profile-name="true"
+              title={activeEntry.displayName}
+            >
+              <span className="truncate">{activeInstanceProfileName}</span>
+            </Badge>
+          ) : null}
         </span>
         <span aria-hidden="true" className="flex items-center">
           <ComposerControlChevron />
@@ -204,11 +238,15 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           {...(props.keybindings ? { keybindings: props.keybindings } : {})}
           modelOptionsByInstance={props.modelOptionsByInstance}
           terminalOpen={props.terminalOpen ?? false}
+          credentialMode={props.credentialMode}
           onRequestClose={() => setIsMenuOpen(false)}
           {...(props.getModelDisabledReason
             ? { getModelDisabledReason: props.getModelDisabledReason }
             : {})}
           onInstanceModelChange={handleInstanceModelChange}
+          {...(props.onCredentialModeChange
+            ? { onCredentialModeChange: props.onCredentialModeChange }
+            : {})}
         />
       </PopoverPopup>
     </Popover>

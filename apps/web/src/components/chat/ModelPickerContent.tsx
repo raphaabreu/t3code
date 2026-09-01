@@ -6,7 +6,7 @@ import {
 import { resolveSelectableModel } from "@t3tools/shared/model";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { memo, useMemo, useState, useCallback, useEffect, useLayoutEffect, useRef } from "react";
-import { ChevronRightIcon, SearchIcon } from "lucide-react";
+import { ChevronRightIcon, SearchIcon, ZapIcon } from "lucide-react";
 import { ModelListRow } from "./ModelListRow";
 import { ModelPickerSidebar } from "./ModelPickerSidebar";
 import {
@@ -106,9 +106,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
    */
   modelOptionsByInstance: ReadonlyMap<ProviderInstanceId, ReadonlyArray<ModelEsque>>;
   terminalOpen: boolean;
+  credentialMode?: "automatic" | undefined;
   onRequestClose?: () => void;
   getModelDisabledReason?: (instanceId: ProviderInstanceId, model: string) => string | null;
   onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
+  onCredentialModeChange?: (mode: "automatic" | null) => void;
 }) {
   const {
     keybindings: providedKeybindings,
@@ -127,6 +129,16 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const activeEntry = props.instanceEntries.find(
     (entry) => entry.instanceId === props.activeInstanceId,
   );
+  const automaticCredentialSupported =
+    props.onCredentialModeChange !== undefined &&
+    activeEntry !== undefined &&
+    (activeEntry.driverKind === "claudeAgent" || activeEntry.driverKind === "codex") &&
+    props.instanceEntries.filter(
+      (entry) =>
+        entry.driverKind === activeEntry.driverKind &&
+        entry.continuationGroupKey === activeEntry.continuationGroupKey &&
+        isProviderInstancePickerReady(entry),
+    ).length > 1;
   const activeInstanceHasSelectableUnavailableModel =
     activeEntry !== undefined &&
     (modelOptionsByInstance.get(props.activeInstanceId) ?? []).some((option) =>
@@ -745,6 +757,37 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                 />
               </div>
             </div>
+
+            {automaticCredentialSupported && !isSearching ? (
+              <div className="px-2 pt-1.5">
+                <button
+                  type="button"
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-md border px-2.5 py-2 text-left text-xs transition-colors",
+                    props.credentialMode === "automatic"
+                      ? "border-primary/40 bg-primary/10 text-foreground"
+                      : "border-border/70 bg-background/60 text-muted-foreground hover:bg-muted hover:text-foreground",
+                  )}
+                  onClick={() => {
+                    props.onCredentialModeChange?.(
+                      props.credentialMode === "automatic" ? null : "automatic",
+                    );
+                    props.onRequestClose?.();
+                  }}
+                >
+                  <ZapIcon className="size-3.5 shrink-0" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium">Automatic credential</span>
+                    <span className="block truncate text-[11px] opacity-70">
+                      Keep this account until it reaches its usage limit
+                    </span>
+                  </span>
+                  <span className="font-medium">
+                    {props.credentialMode === "automatic" ? "On" : "Off"}
+                  </span>
+                </button>
+              </div>
+            ) : null}
 
             {/* Model list */}
             <div className="relative min-h-0 flex-1 overflow-hidden pr-px">
