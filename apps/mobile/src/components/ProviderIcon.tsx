@@ -39,6 +39,21 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
 
+  if (props.provider === "wolf") {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <Path
+          fill={mono}
+          d="M12 2.75 3.5 6.1v5.06c0 4.62 3.4 8.94 8.5 10.09 5.1-1.15 8.5-5.47 8.5-10.09V6.1L12 2.75Zm0 1.83 6.75 2.66v3.92c0 3.7-2.63 7.2-6.75 8.28-4.12-1.08-6.75-4.58-6.75-8.28V7.24L12 4.58Z"
+        />
+        <Path
+          fill={mono}
+          d="M8.6 9.05a1.13 1.13 0 1 1 0 2.26 1.13 1.13 0 0 1 0-2.26Zm6.8 0a1.13 1.13 0 1 1 0 2.26 1.13 1.13 0 0 1 0-2.26ZM12 12.4l1.9 1.44-.72 1.02H10.8l-.7-1.02L12 12.4Z"
+        />
+      </Svg>
+    );
+  }
+
   if (props.provider === "cursor") {
     return (
       <Svg width={size} height={size} viewBox="0 0 466.73 532.09" fill="none">

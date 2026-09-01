@@ -7,7 +7,7 @@ orchestration layer does not know which one is behind a thread.
 
 ## Built-in drivers
 
-[`builtInDrivers.ts`][drivers] exports `BUILT_IN_DRIVERS` with five entries:
+[`builtInDrivers.ts`][drivers] exports `BUILT_IN_DRIVERS` with six entries:
 
 | Driver kind   | Driver source                           |
 | ------------- | --------------------------------------- |
@@ -16,12 +16,19 @@ orchestration layer does not know which one is behind a thread.
 | `cursor`      | [`Drivers/CursorDriver.ts`][cursor]     |
 | `grok`        | [`Drivers/GrokDriver.ts`][grok]         |
 | `opencode`    | [`Drivers/OpenCodeDriver.ts`][opencode] |
+| `wolf`        | [`Drivers/WolfDriver.ts`][wolf]         |
 
 Each driver declares its `driverKind`, a `configSchema`, and a `create` function that builds an
 adapter in a child scope. Adapter implementations live beside them in
 `apps/server/src/provider/Layers/` (`CodexAdapter.ts`, `ClaudeAdapter.ts`, and so on) and conform to
 [`ProviderAdapter.ts`][adapter]. Read the driver plus its adapter to see how a specific agent's
 transport, config, and event shapes are mapped.
+
+Transports differ per driver: Cursor and Grok speak ACP over stdio and share `AcpSessionRuntime`;
+Codex drives its own app-server protocol; Claude wraps the Claude Agent SDK in-process; and Wolf
+speaks its own JSONL RPC protocol (`wolf --mode rpc`) through `provider/wolf/`. Wolf maps one T3
+thread to one Wolf session via `--session-id`, which creates the session on first use and resumes it
+afterwards.
 
 ## Registry and routing
 
@@ -103,6 +110,8 @@ attachment to the provider adapter. Each adapter decides what its provider inges
 
 - Codex, Claude, Cursor, and Grok send images as native image inputs and skip generic files. For
   these providers, generic files reach the agent only as file paths in the turn text.
+- Wolf ingests no attachments natively; every attachment reaches the agent as a file path in the
+  turn text.
 - OpenCode sends PNG/JPEG/GIF/WebP images, text files, and PDFs up to 20 MB as native file parts
   with their real mime type. Everything else (ZIP and other binaries, image formats model APIs
   reject, oversized files) falls back to the file path in the turn text, like the other providers.
@@ -111,6 +120,10 @@ Claude receives the attachment directory as an allowed additional directory. Cod
 configured sandbox policy, so access depends on that policy and the selected runtime mode. OpenCode
 allows all paths in full-access mode and requests approval for directories outside the workspace in
 restricted modes. Cursor and Grok use their own provider permission rules.
+
+Wolf has no permission system: its tools run with the permissions of the server process regardless
+of the selected runtime mode, so it never opens an approval request. A session started in an
+approval mode emits a `config.warning` rather than implying gating that does not exist.
 
 The server does not copy attachments into a project or bypass provider approval rules. If an agent
 cannot read an attachment, the user must approve the access or select a runtime mode that permits it.
@@ -165,6 +178,7 @@ when a request opens (approval) or user input is requested, via
 [cursor]: ../../apps/server/src/provider/Drivers/CursorDriver.ts
 [grok]: ../../apps/server/src/provider/Drivers/GrokDriver.ts
 [opencode]: ../../apps/server/src/provider/Drivers/OpenCodeDriver.ts
+[wolf]: ../../apps/server/src/provider/Drivers/WolfDriver.ts
 [opencode-server-owner]: ../../apps/server/src/provider/OpenCodeServerOwner.ts
 [adapter]: ../../apps/server/src/provider/Services/ProviderAdapter.ts
 [instances]: ../../apps/server/src/provider/Services/ProviderInstanceRegistry.ts

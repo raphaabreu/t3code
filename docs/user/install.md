@@ -71,9 +71,13 @@ to use, then authenticate it.
 | Cursor     | [Cursor CLI](https://cursor.com/cli)                  | `cursor-agent` | `agent login`         |
 | Grok Build | [Grok Build CLI](https://x.ai/cli)                    | `grok`         | `grok login`          |
 | OpenCode   | [OpenCode](https://opencode.ai)                       | `opencode`     | `opencode auth login` |
+| Wolf       | Wolf CLI                                              | `wolf`         | `wolf` then `/login`  |
 
-Codex and Claude are on by default. Cursor, Grok Build, and OpenCode are off by default; turn
+Codex and Claude are on by default. Cursor, Grok Build, OpenCode, and Wolf are off by default; turn
 them on in **Settings** → the provider's card when you want to use them.
+
+Wolf runs its tools without an approval system, so a Wolf thread behaves as full access whatever
+runtime mode is selected. Use it where you would use a fully trusted agent.
 
 Cursor is the one to watch: install Cursor CLI, which provides the `cursor-agent` binary that
 T3 Code looks for, but authenticate with `agent login`, not `cursor-agent login`.
