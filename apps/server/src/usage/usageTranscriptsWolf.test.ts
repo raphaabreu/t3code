@@ -82,6 +82,46 @@ describe("parseWolfLine", () => {
     expect(record?.reportedCostUsd).toBe(0.04258);
   });
 
+  it("prefers the resolved responseModel over an alias", () => {
+    // `opus` is an alias; the concrete id billed for is on responseModel, and
+    // an alias is unpriceable and merges distinct generations into one row.
+    const line = JSON.stringify({
+      type: "message",
+      id: "aliased",
+      timestamp: "2026-08-29T16:18:59.320Z",
+      message: {
+        role: "assistant",
+        content: [],
+        provider: "anthropic",
+        model: "opus",
+        responseModel: "claude-opus-4-8",
+        usage: { input: 10, output: 2 },
+      },
+    });
+    expect(parseWolfLine(line, SESSION, initialWolfScanState())?.model).toBe(
+      "anthropic/claude-opus-4-8",
+    );
+  });
+
+  it("ignores a placeholder responseModel on a synthesized message", () => {
+    const line = JSON.stringify({
+      type: "message",
+      id: "synthetic",
+      timestamp: "2026-08-29T16:18:59.320Z",
+      message: {
+        role: "assistant",
+        content: [],
+        provider: "anthropic",
+        model: "claude-opus-5",
+        responseModel: "<synthetic>",
+        usage: { input: 10, output: 2 },
+      },
+    });
+    expect(parseWolfLine(line, SESSION, initialWolfScanState())?.model).toBe(
+      "anthropic/claude-opus-5",
+    );
+  });
+
   it("attributes a title to the model named by a preceding model_change", () => {
     // Wolf omits the model on title/compaction entries but bills them at the
     // active model's rate, so the scan carries it forward.

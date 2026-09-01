@@ -394,6 +394,23 @@ function qualifiedWolfModel(provider: unknown, modelId: unknown): string | undef
   return typeof provider === "string" && provider.length > 0 ? `${provider}/${modelId}` : modelId;
 }
 
+/**
+ * Concrete model id billed for one assistant message.
+ *
+ * `model` is often an alias (`opus`, `default`) while the resolved id lands on
+ * `responseModel`; Wolf's own cost breakdown prefers `responseModel` for the
+ * same reason. `responseModel` is also a placeholder (`<synthetic>`) on locally
+ * synthesized messages, which names no model and must not become its own row.
+ */
+function wolfMessageModel(message: Record<string, unknown> | null | undefined): string | undefined {
+  const responseModel = message?.["responseModel"];
+  const resolved =
+    typeof responseModel === "string" && !responseModel.startsWith("<")
+      ? responseModel
+      : message?.["model"];
+  return qualifiedWolfModel(message?.["provider"], resolved);
+}
+
 function readWolfUsageTotals(raw: unknown): UsageTokenTotals | null {
   if (typeof raw !== "object" || raw === null) return null;
   const usage = raw as Record<string, unknown>;
@@ -470,7 +487,7 @@ export function parseWolfLine(
   // An assistant message names its own model and also advances the session's
   // active model; the other entry kinds inherit it, since Wolf bills them at
   // that model's rate without recording which one it was.
-  const stamped = qualifiedWolfModel(messageRecord?.["provider"], messageRecord?.["model"]);
+  const stamped = wolfMessageModel(messageRecord);
   if (stamped) state.activeModel = stamped;
   const model = stamped ?? state.activeModel ?? "unknown";
 
