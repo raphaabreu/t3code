@@ -210,6 +210,48 @@ wolfAdapterTestLayer("WolfAdapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("fails the turn when wolf dies after acknowledging the prompt", () =>
+    Effect.gen(function* () {
+      // Wolf acks `prompt` before the turn runs, so this crash window leaves
+      // nothing to emit `agent_settled`; the turn must still settle.
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockWolfWrapper({ T3_WOLF_MOCK_EXIT_AFTER_ACK: "1" }),
+      );
+      const adapter = yield* makeAdapter(wrapperPath);
+      const events = yield* collectEvents(adapter);
+      const threadId = ThreadId.make("wolf-thread-crash");
+
+      yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+      yield* adapter.sendTurn({ threadId, input: "hello" });
+
+      const completed = yield* events.waitFor("turn.completed");
+      assert.equal(completed.payload.state, "failed");
+      assert.match(String(completed.payload.errorMessage), /exited before finishing/);
+
+      const exited = yield* events.waitFor("session.exited");
+      assert.equal(exited.payload.exitKind, "error");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("rejects a request issued after the process is gone", () =>
+    Effect.gen(function* () {
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockWolfWrapper({ T3_WOLF_MOCK_EXIT_AFTER_ACK: "1" }),
+      );
+      const adapter = yield* makeAdapter(wrapperPath);
+      const events = yield* collectEvents(adapter);
+      const threadId = ThreadId.make("wolf-thread-dead-request");
+
+      yield* adapter.startSession({ threadId, runtimeMode: "full-access" });
+      yield* adapter.sendTurn({ threadId, input: "hello" });
+      yield* events.waitFor("session.exited");
+
+      // A second turn must fail fast rather than wait on a dead process.
+      const exit = yield* Effect.exit(adapter.sendTurn({ threadId, input: "again" }));
+      assert.isTrue(exit._tag === "Failure");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("interrupting a hung turn releases the waiter and reports the abort", () =>
     Effect.gen(function* () {
       const wrapperPath = yield* Effect.promise(() =>

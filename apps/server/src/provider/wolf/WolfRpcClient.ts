@@ -17,6 +17,8 @@ import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/unstable/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
 
+import { resolveSpawnCommand } from "@t3tools/shared/shell";
+
 import { ProviderAdapterProcessError, ProviderAdapterRequestError } from "../Errors.ts";
 import { decodeWolfRecord, splitJsonLines, type WolfRpcRecord } from "./WolfRpcProtocol.ts";
 
@@ -52,7 +54,10 @@ export interface WolfRpcClient {
     params?: Record<string, unknown>,
   ) => Effect.Effect<void, ProviderAdapterRequestError>;
   readonly events: Stream.Stream<WolfEvent>;
+  /** False once stdout has ended, whether or not the OS handle lingers. */
   readonly isRunning: Effect.Effect<boolean>;
+  /** Resolves when the process exits, so callers can race it against a wait. */
+  readonly awaitExit: Effect.Effect<void>;
 }
 
 interface PendingRequest {
@@ -80,11 +85,19 @@ export const makeWolfRpcClient = (
         ...(cause === undefined ? {} : { cause }),
       });
 
+    // Windows installs Wolf as a `.cmd` shim, which only launches through a
+    // shell; every other CLI spawn in the server resolves the same way.
+    const spawnCommand = yield* resolveSpawnCommand(options.command, [...options.args], {
+      ...(options.env ? { env: options.env, extendEnv: true } : {}),
+    }).pipe(
+      Effect.mapError((cause) => processError(`Failed to resolve '${options.command}'.`, cause)),
+    );
     const child = yield* spawner
       .spawn(
-        ChildProcess.make(options.command, [...options.args], {
+        ChildProcess.make(spawnCommand.command, spawnCommand.args, {
           cwd: options.cwd,
           ...(options.env ? { env: options.env, extendEnv: true } : {}),
+          shell: spawnCommand.shell,
         }),
       )
       .pipe(
@@ -95,6 +108,9 @@ export const makeWolfRpcClient = (
     const events = yield* Queue.unbounded<WolfEvent>();
     const outbound = yield* Queue.unbounded<string>();
     const pending = yield* Ref.make(new Map<string, PendingRequest>());
+    // Latched once the process is gone. Without it a request issued after exit
+    // registers a deferred that nothing will ever settle.
+    const exited = yield* Ref.make(false);
 
     yield* Stream.run(Stream.encodeText(Stream.fromQueue(outbound)), child.stdin).pipe(
       Effect.catch((cause) =>
@@ -176,7 +192,8 @@ export const makeWolfRpcClient = (
       // stdout ending means the process is gone: nothing will ever answer an
       // outstanding request, so settle them instead of leaking the wait.
       Effect.ensuring(
-        failAllPending("Wolf process exited before responding.").pipe(
+        Ref.set(exited, true).pipe(
+          Effect.tap(() => failAllPending("Wolf process exited before responding.")),
           Effect.tap(() => Queue.shutdown(events)),
         ),
       ),
@@ -213,6 +230,13 @@ export const makeWolfRpcClient = (
 
     const request: WolfRpcClient["request"] = (command, params) =>
       Effect.gen(function* () {
+        if (yield* Ref.get(exited)) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: command,
+            detail: "Wolf process is no longer running.",
+          });
+        }
         const id = yield* crypto.randomUUIDv4.pipe(
           Effect.mapError(
             (cause) =>
@@ -231,6 +255,11 @@ export const makeWolfRpcClient = (
           return next;
         });
         yield* write({ id, type: command, ...params });
+        // The exit latch can flip between the check above and registration, so
+        // re-check rather than waiting on a deferred nothing will settle.
+        if (yield* Ref.get(exited)) {
+          yield* failAllPending("Wolf process is no longer running.");
+        }
         return yield* Deferred.await(deferred);
       });
 
@@ -246,6 +275,7 @@ export const makeWolfRpcClient = (
       request,
       notify,
       events: Stream.fromQueue(events),
-      isRunning: child.isRunning.pipe(Effect.orElseSucceed(() => false)),
+      isRunning: Ref.get(exited).pipe(Effect.map((dead) => !dead)),
+      awaitExit: child.exitCode.pipe(Effect.ignore, Effect.asVoid),
     } satisfies WolfRpcClient;
   });

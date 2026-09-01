@@ -117,7 +117,9 @@ export const makeWolfTextGeneration = Effect.fn("makeWolfTextGeneration")(functi
         ),
       );
 
-      yield* settled.await.pipe(
+      // An early exit never emits `agent_settled`, so race the latch against
+      // process death rather than stalling for the full timeout.
+      yield* Effect.raceAll([settled.await, client.awaitExit]).pipe(
         Effect.timeoutOption(WOLF_TIMEOUT_MS),
         Effect.flatMap(
           Option.match({

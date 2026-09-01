@@ -358,15 +358,6 @@ function grokTotalsToUsage(totals: GrokUsageTotals): UsageTokenTotals {
   };
 }
 
-/**
- * Parses one line of a Grok Build `updates.jsonl` session log.
- *
- * Usage lands on `turn_completed` session updates. Per-model breakdowns live
- * under `usage.modelUsage`; when present each model becomes its own record.
- *
- * Returns every record for the line (0 or more). Callers stream line-by-line
- * and flatten.
- */
 /* -------------------------------------------------------------------------- */
 /* Wolf                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -465,6 +456,15 @@ export function parseWolfLine(line: string, sessionIdFallback: string): UsageRec
 /* Grok                                                                       */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Parses one line of a Grok Build `updates.jsonl` session log.
+ *
+ * Usage lands on `turn_completed` session updates. Per-model breakdowns live
+ * under `usage.modelUsage`; when present each model becomes its own record.
+ *
+ * Returns every record for the line (0 or more). Callers stream line-by-line
+ * and flatten.
+ */
 export function parseGrokLine(line: string): readonly UsageRecord[] {
   let parsed: unknown;
   try {

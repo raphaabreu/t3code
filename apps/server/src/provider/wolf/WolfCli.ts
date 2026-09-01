@@ -1,7 +1,6 @@
 /**
  * Wolf CLI conventions shared by the adapter, provider snapshot, and text
- * generation: binary resolution, session-id derivation, and the on-disk
- * locations Wolf writes.
+ * generation: binary resolution and session-id derivation.
  *
  * @module provider/wolf/WolfCli
  */
@@ -18,13 +17,4 @@ export function resolveWolfBinary(settings: { readonly binaryPath?: string | und
  */
 export function wolfSessionIdForThread(threadId: string): string {
   return `t3-${threadId}`;
-}
-
-/**
- * Wolf's agent home. Sessions live below `<home>/sessions`, credentials in
- * `<home>/auth.json`. `WOLF_AGENT_DIR` wins when set, matching the CLI.
- */
-export function wolfAgentDir(env: NodeJS.ProcessEnv, homeDir: string): string {
-  const override = env.WOLF_AGENT_DIR?.trim();
-  return override && override.length > 0 ? override : `${homeDir}/.wolf/agent`;
 }

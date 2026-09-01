@@ -70,6 +70,8 @@ interface WolfSessionContext {
   settle: Deferred.Deferred<void> | undefined;
   /** Last `turn_end` seen for the active turn, used to settle the turn. */
   lastTurnEnd: ReturnType<typeof readTurnEnd> | undefined;
+  /** Set when the child died mid-turn, so the turn reports failure not success. */
+  exitedUnexpectedly: boolean;
   /** >0 means a prompt is running, so a new sendTurn steers the active turn. */
   promptsInFlight: number;
   stopped: boolean;
@@ -201,146 +203,178 @@ export function makeWolfAdapter(wolfSettings: WolfSettings, options?: WolfAdapte
           const cwd = input.cwd ?? serverConfig.cwd;
           const resume = parseWolfResume(input.resumeCursor);
           const sessionId = resume?.sessionId ?? wolfSessionIdForThread(input.threadId);
-          const model = input.modelSelection?.model;
+          // Honor a selection only when it targets this instance, matching
+          // sendTurn; a foreign slug would be passed as --model and then block
+          // the later set_model correction.
+          const model =
+            input.modelSelection?.instanceId === boundInstanceId
+              ? input.modelSelection.model
+              : undefined;
 
           const sessionScope = yield* Scope.make();
-          let sessionScopeTransferred = false;
-          const args = [
-            "--mode",
-            "rpc",
-            "--session-id",
-            sessionId,
-            ...(model ? ["--model", model] : []),
-          ];
 
-          const client = yield* makeWolfRpcClient({
-            command: resolveWolfBinary(wolfSettings),
-            args,
-            cwd,
-            ...(options?.environment ? { env: options.environment } : {}),
-            threadId: input.threadId,
-            onRecord: (record) => logNative(input.threadId, record),
-          }).pipe(
-            Effect.provideService(Scope.Scope, sessionScope),
-            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-            Effect.provideService(Crypto.Crypto, crypto),
-          );
+          return yield* Effect.gen(function* () {
+            const args = [
+              "--mode",
+              "rpc",
+              "--session-id",
+              sessionId,
+              ...(model ? ["--model", model] : []),
+            ];
 
-          const now = yield* nowIso;
-          const session: ProviderSession = {
-            provider: PROVIDER,
-            providerInstanceId: boundInstanceId,
-            status: "ready",
-            runtimeMode: input.runtimeMode,
-            cwd,
-            ...(model ? { model } : {}),
-            threadId: input.threadId,
-            resumeCursor: { schemaVersion: WOLF_RESUME_VERSION, sessionId },
-            createdAt: now,
-            updatedAt: now,
-          };
+            const client = yield* makeWolfRpcClient({
+              command: resolveWolfBinary(wolfSettings),
+              args,
+              cwd,
+              ...(options?.environment ? { env: options.environment } : {}),
+              threadId: input.threadId,
+              onRecord: (record) => logNative(input.threadId, record),
+            }).pipe(
+              Effect.provideService(Scope.Scope, sessionScope),
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+              Effect.provideService(Crypto.Crypto, crypto),
+            );
 
-          const ctx: WolfSessionContext = {
-            threadId: input.threadId,
-            session,
-            scope: sessionScope,
-            client,
-            turns: [],
-            activeTurnId: undefined,
-            assistantItemId: yield* randomUUIDv4,
-            settle: undefined,
-            lastTurnEnd: undefined,
-            promptsInFlight: 0,
-            stopped: false,
-          };
+            const now = yield* nowIso;
+            const session: ProviderSession = {
+              provider: PROVIDER,
+              providerInstanceId: boundInstanceId,
+              status: "ready",
+              runtimeMode: input.runtimeMode,
+              cwd,
+              ...(model ? { model } : {}),
+              threadId: input.threadId,
+              resumeCursor: { schemaVersion: WOLF_RESUME_VERSION, sessionId },
+              createdAt: now,
+              updatedAt: now,
+            };
 
-          yield* Stream.runForEach(client.events, (event) =>
-            Effect.gen(function* () {
-              if (event.type === "turn_end") {
-                ctx.lastTurnEnd = readTurnEnd(event.payload);
-                const usage = ctx.lastTurnEnd.usage;
-                yield* offerRuntimeEvent({
-                  type: "thread.token-usage.updated",
-                  ...(yield* makeEventStamp()),
+            const ctx: WolfSessionContext = {
+              threadId: input.threadId,
+              session,
+              scope: sessionScope,
+              client,
+              turns: [],
+              activeTurnId: undefined,
+              assistantItemId: yield* randomUUIDv4,
+              settle: undefined,
+              lastTurnEnd: undefined,
+              exitedUnexpectedly: false,
+              promptsInFlight: 0,
+              stopped: false,
+            };
+
+            yield* Stream.runForEach(client.events, (event) =>
+              Effect.gen(function* () {
+                if (event.type === "turn_end") {
+                  ctx.lastTurnEnd = readTurnEnd(event.payload);
+                  const usage = ctx.lastTurnEnd.usage;
+                  yield* offerRuntimeEvent({
+                    type: "thread.token-usage.updated",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: ctx.threadId,
+                    turnId: ctx.activeTurnId,
+                    payload: {
+                      usage: {
+                        usedTokens:
+                          usage.inputTokens + usage.cachedInputTokens + usage.outputTokens,
+                        inputTokens: usage.inputTokens,
+                        cachedInputTokens: usage.cachedInputTokens,
+                        outputTokens: usage.outputTokens,
+                        reasoningOutputTokens: usage.reasoningTokens,
+                      },
+                    },
+                  });
+                  return;
+                }
+                if (isSettleEvent(event.type)) {
+                  if (ctx.settle) yield* Deferred.succeed(ctx.settle, undefined);
+                  return;
+                }
+                const context: WolfEventContext = {
+                  stamp: yield* makeEventStamp(),
                   provider: PROVIDER,
                   threadId: ctx.threadId,
                   turnId: ctx.activeTurnId,
-                  payload: {
-                    usage: {
-                      usedTokens: usage.inputTokens + usage.cachedInputTokens + usage.outputTokens,
-                      inputTokens: usage.inputTokens,
-                      cachedInputTokens: usage.cachedInputTokens,
-                      outputTokens: usage.outputTokens,
-                      reasoningOutputTokens: usage.reasoningTokens,
-                    },
-                  },
+                };
+                const translated = translateWolfEvent({
+                  context,
+                  event,
+                  assistantItemId: ctx.assistantItemId,
                 });
-                return;
-              }
-              if (isSettleEvent(event.type)) {
-                if (ctx.settle) yield* Deferred.succeed(ctx.settle, undefined);
-                return;
-              }
-              const context: WolfEventContext = {
-                stamp: yield* makeEventStamp(),
-                provider: PROVIDER,
-                threadId: ctx.threadId,
-                turnId: ctx.activeTurnId,
-              };
-              const translated = translateWolfEvent({
-                context,
-                event,
-                assistantItemId: ctx.assistantItemId,
-              });
-              yield* Effect.forEach(translated, offerRuntimeEvent, { discard: true });
-            }),
-          ).pipe(
-            Effect.catch((cause) =>
-              Effect.logError("Failed to process a Wolf runtime event.", { cause }),
-            ),
-            Effect.forkIn(sessionScope),
-          );
+                yield* Effect.forEach(translated, offerRuntimeEvent, { discard: true });
+              }),
+            ).pipe(
+              Effect.catch((cause) =>
+                Effect.logError("Failed to process a Wolf runtime event.", { cause }),
+              ),
+              Effect.forkIn(sessionScope),
+            );
 
-          sessions.set(input.threadId, ctx);
-          sessionScopeTransferred = true;
+            sessions.set(input.threadId, ctx);
 
-          yield* offerRuntimeEvent({
-            type: "session.started",
-            ...(yield* makeEventStamp()),
-            provider: PROVIDER,
-            threadId: input.threadId,
-            payload: { message: `Wolf session ${sessionId} ready` },
-          });
-          yield* offerRuntimeEvent({
-            type: "session.state.changed",
-            ...(yield* makeEventStamp()),
-            provider: PROVIDER,
-            threadId: input.threadId,
-            payload: { state: "ready", reason: "Wolf RPC session ready" },
-          });
-          yield* offerRuntimeEvent({
-            type: "thread.started",
-            ...(yield* makeEventStamp()),
-            provider: PROVIDER,
-            threadId: input.threadId,
-            payload: { providerThreadId: sessionId },
-          });
+            // Wolf acknowledges `prompt` before the turn runs, so a crash after
+            // the ack would otherwise leave sendTurn waiting on a settle that
+            // can never arrive and the thread pinned as running.
+            yield* client.awaitExit.pipe(
+              Effect.tap(() =>
+                Effect.gen(function* () {
+                  if (ctx.stopped) return;
+                  ctx.exitedUnexpectedly = true;
+                  if (ctx.settle)
+                    yield* Deferred.succeed(ctx.settle, undefined).pipe(Effect.ignore);
+                  yield* offerRuntimeEvent({
+                    type: "session.exited",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: ctx.threadId,
+                    payload: { exitKind: "error", reason: "Wolf process exited unexpectedly." },
+                  });
+                }),
+              ),
+              Effect.forkIn(sessionScope),
+            );
 
-          const warning = runtimeModeWarning(input.runtimeMode);
-          if (warning) {
             yield* offerRuntimeEvent({
-              type: "config.warning",
+              type: "session.started",
               ...(yield* makeEventStamp()),
               provider: PROVIDER,
               threadId: input.threadId,
-              payload: { summary: warning },
+              payload: { message: `Wolf session ${sessionId} ready` },
             });
-          }
+            yield* offerRuntimeEvent({
+              type: "session.state.changed",
+              ...(yield* makeEventStamp()),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              payload: { state: "ready", reason: "Wolf RPC session ready" },
+            });
+            yield* offerRuntimeEvent({
+              type: "thread.started",
+              ...(yield* makeEventStamp()),
+              provider: PROVIDER,
+              threadId: input.threadId,
+              payload: { providerThreadId: sessionId },
+            });
 
-          if (!sessionScopeTransferred) {
-            yield* Scope.close(sessionScope, Exit.void);
-          }
-          return session;
+            const warning = runtimeModeWarning(input.runtimeMode);
+            if (warning) {
+              yield* offerRuntimeEvent({
+                type: "config.warning",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId: input.threadId,
+                payload: { summary: warning },
+              });
+            }
+
+            return session;
+          }).pipe(
+            // Anything that fails or is interrupted after the spawn must close
+            // the scope, or the wolf child outlives the failed startSession.
+            Effect.onError(() => Scope.close(sessionScope, Exit.void).pipe(Effect.ignore)),
+          );
         }),
       );
 
@@ -411,6 +445,9 @@ export function makeWolfAdapter(wolfSettings: WolfSettings, options?: WolfAdapte
           // Only the last prompt of a steered turn settles it.
           if (ctx.promptsInFlight === 1) {
             const outcome = ctx.lastTurnEnd;
+            const errorMessage = ctx.exitedUnexpectedly
+              ? "Wolf exited before finishing the turn."
+              : outcome?.errorMessage;
             yield* offerRuntimeEvent({
               type: "turn.completed",
               ...(yield* makeEventStamp()),
@@ -418,19 +455,19 @@ export function makeWolfAdapter(wolfSettings: WolfSettings, options?: WolfAdapte
               threadId: input.threadId,
               turnId,
               payload: {
-                state: outcome?.errorMessage ? "failed" : "completed",
-                ...(outcome?.errorMessage ? { errorMessage: outcome.errorMessage } : {}),
+                state: errorMessage ? "failed" : "completed",
+                ...(errorMessage ? { errorMessage } : {}),
                 ...(outcome ? { totalCostUsd: outcome.usage.totalCost } : {}),
               },
             });
-            if (outcome?.errorMessage) {
+            if (errorMessage) {
               yield* offerRuntimeEvent({
                 type: "runtime.error",
                 ...(yield* makeEventStamp()),
                 provider: PROVIDER,
                 threadId: input.threadId,
                 turnId,
-                payload: { message: outcome.errorMessage, class: "provider_error" },
+                payload: { message: errorMessage, class: "provider_error" },
               });
             }
             ctx.activeTurnId = undefined;

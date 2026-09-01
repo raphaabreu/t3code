@@ -13,6 +13,9 @@ const emitToolCall = NodeProcess.env.T3_WOLF_MOCK_EMIT_TOOL_CALL === "1";
 const failTurn = NodeProcess.env.T3_WOLF_MOCK_FAIL_TURN === "1";
 const hangTurn = NodeProcess.env.T3_WOLF_MOCK_HANG_TURN === "1";
 const exitOnPrompt = NodeProcess.env.T3_WOLF_MOCK_EXIT_ON_PROMPT === "1";
+// Wolf acks `prompt` before running the turn, so a crash in between is the
+// case that leaves a naive client waiting on a settle that never arrives.
+const exitAfterAck = NodeProcess.env.T3_WOLF_MOCK_EXIT_AFTER_ACK === "1";
 const emitLeadingNoise = NodeProcess.env.T3_WOLF_MOCK_EMIT_LEADING_NOISE === "1";
 const replyText = NodeProcess.env.T3_WOLF_MOCK_REPLY_TEXT ?? "Mock wolf reply.";
 const modelId = NodeProcess.env.T3_WOLF_MOCK_MODEL ?? "gpt-5.6-sol";
@@ -118,6 +121,9 @@ NodeProcess.stdin.on("data", (chunk: Buffer) => {
           NodeProcess.exit(1);
         }
         respond(id, "prompt");
+        if (exitAfterAck) {
+          NodeProcess.exit(1);
+        }
         if (!hangTurn) runTurn();
         break;
       case "steer":
