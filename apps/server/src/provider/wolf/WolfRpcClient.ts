@@ -87,9 +87,11 @@ export const makeWolfRpcClient = (
 
     // Windows installs Wolf as a `.cmd` shim, which only launches through a
     // shell; every other CLI spawn in the server resolves the same way.
-    const spawnCommand = yield* resolveSpawnCommand(options.command, [...options.args], {
-      ...(options.env ? { env: options.env, extendEnv: true } : {}),
-    }).pipe(
+    const spawnCommand = yield* resolveSpawnCommand(
+      options.command,
+      [...options.args],
+      options.env ? { env: options.env, extendEnv: true } : {},
+    ).pipe(
       Effect.mapError((cause) => processError(`Failed to resolve '${options.command}'.`, cause)),
     );
     const child = yield* spawner
