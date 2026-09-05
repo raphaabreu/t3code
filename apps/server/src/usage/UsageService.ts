@@ -35,6 +35,7 @@ import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import { ServerConfig } from "../config.ts";
+import { resolveWolfUsageDirectory } from "./wolfUsagePaths.ts";
 import { expandHomePath } from "../pathExpansion.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
@@ -229,13 +230,6 @@ export const make = Effect.gen(function* () {
         ? path.resolve(expandHomePath(grokHomeEnv))
         : path.join(NodeOS.homedir(), ".grok");
 
-    // Wolf's agent home; `WOLF_AGENT_DIR` wins when set, matching the CLI.
-    const wolfAgentDirEnv = hostEnvironment["WOLF_AGENT_DIR"]?.trim() ?? "";
-    const wolfAgentDirPath =
-      wolfAgentDirEnv.length > 0
-        ? path.resolve(expandHomePath(wolfAgentDirEnv))
-        : path.join(NodeOS.homedir(), ".wolf", "agent");
-
     return [
       { provider: "claude" as const, dir: claudeDir },
       { provider: "codex" as const, dir: path.join(codexLayout.sharedHomePath, "sessions") },
@@ -244,7 +238,7 @@ export const make = Effect.gen(function* () {
         dir: path.join(grokHome, "sessions"),
         fileName: "updates.jsonl",
       },
-      { provider: "wolf" as const, dir: path.join(wolfAgentDirPath, "sessions") },
+      { provider: "wolf" as const, dir: resolveWolfUsageDirectory(hostEnvironment) },
     ];
   });
 

@@ -24,7 +24,8 @@ import type { UsageRecord } from "./usageTranscripts.ts";
 // v2: Codex fork-copy suppression changed what a file parses to.
 // v3: Wolf titles and compaction summaries gained model attribution, and Wolf
 // models resolve to the concrete id rather than an alias.
-export const USAGE_SCAN_CACHE_VERSION = 3 as const;
+// v4: Include billed Wolf branch summaries and unsuccessful goal inference.
+export const USAGE_SCAN_CACHE_VERSION = 4 as const;
 
 export interface CachedFile {
   readonly size: number;

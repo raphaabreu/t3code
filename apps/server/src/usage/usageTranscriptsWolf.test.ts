@@ -82,6 +82,28 @@ describe("parseWolfLine", () => {
     expect(record?.reportedCostUsd).toBe(0.04258);
   });
 
+  it.each(["branch_summary", "session_goal_inference"])(
+    "includes billed %s records from historical sessions",
+    (type) => {
+      const state = initialWolfScanState();
+      parseWolfLine(assistantLine, SESSION, state);
+      const record = parseWolfLine(
+        JSON.stringify({
+          ...JSON.parse(titleLine),
+          type,
+          id: "extra-call",
+          outcome: "no_goal",
+        }),
+        SESSION,
+        state,
+      );
+      expect(record?.reportedCostUsd).toBe(0.04258);
+      expect(record?.model).toBe("openai-codex/gpt-5.6-sol");
+      expect(record?.totals.outputTokens).toBe(10);
+      expect(record?.dedupeKey).toBe("wolf:extra-call");
+    },
+  );
+
   it("prefers the resolved responseModel over an alias", () => {
     // `opus` is an alias; the concrete id billed for is on responseModel, and
     // an alias is unpriceable and merges distinct generations into one row.

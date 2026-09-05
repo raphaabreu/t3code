@@ -367,7 +367,14 @@ function grokTotalsToUsage(totals: GrokUsageTotals): UsageTokenTotals {
  * cover normal turns; the rest are model calls Wolf makes on its own behalf
  * (titles, goals, compaction summaries) and are billed the same way.
  */
-const WOLF_USAGE_ENTRY_TYPES = new Set(["message", "session_title", "session_goal", "compaction"]);
+const WOLF_USAGE_ENTRY_TYPES = new Set([
+  "message",
+  "session_title",
+  "session_goal",
+  "session_goal_inference",
+  "compaction",
+  "branch_summary",
+]);
 
 /**
  * Carries the session's active model across lines.
