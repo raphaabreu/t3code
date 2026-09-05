@@ -70,6 +70,7 @@ export function totalTokens(totals: UsageTokenTotals): number {
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
   if (provider === "claude") return line.includes('"usage"');
   if (provider === "grok") return line.includes('"turn_completed"');
+  if (provider === "wolf") return line.includes('"usage"');
   return line.includes('"token_count"');
 }
 
@@ -356,6 +357,173 @@ function grokTotalsToUsage(totals: GrokUsageTotals): UsageTokenTotals {
     reasoningTokens: Math.min(outputTokens, totals.reasoningTokens),
   };
 }
+
+/* -------------------------------------------------------------------------- */
+/* Wolf                                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Entry kinds in a Wolf session that carry provider usage. Assistant messages
+ * cover normal turns; the rest are model calls Wolf makes on its own behalf
+ * (titles, goals, compaction summaries) and are billed the same way.
+ */
+const WOLF_USAGE_ENTRY_TYPES = new Set([
+  "message",
+  "session_title",
+  "session_goal",
+  "session_goal_inference",
+  "compaction",
+  "branch_summary",
+]);
+
+/**
+ * Carries the session's active model across lines.
+ *
+ * Wolf stamps assistant messages with their own model but writes titles, goals,
+ * and compaction summaries without one, even though it bills them at the active
+ * model's rate. Tracking the model as the file streams is the same approach the
+ * Codex parser takes with `turn_context`.
+ */
+export interface WolfScanState {
+  /** Concrete id resolved from an assistant message. Preferred. */
+  resolvedModel: string | undefined;
+  /** Id declared by `model_change`, which is frequently an alias. */
+  declaredModel: string | undefined;
+}
+
+export function initialWolfScanState(): WolfScanState {
+  return { resolvedModel: undefined, declaredModel: undefined };
+}
+
+/**
+ * Wolf model ids are unique only within a provider, so usage is keyed by the
+ * `provider/id` pair the CLI itself accepts.
+ */
+function qualifiedWolfModel(provider: unknown, modelId: unknown): string | undefined {
+  if (typeof modelId !== "string" || modelId.length === 0) return undefined;
+  return typeof provider === "string" && provider.length > 0 ? `${provider}/${modelId}` : modelId;
+}
+
+/**
+ * Concrete model id billed for one assistant message.
+ *
+ * `model` is often an alias (`opus`, `default`) while the resolved id lands on
+ * `responseModel`; Wolf's own cost breakdown prefers `responseModel` for the
+ * same reason. `responseModel` is also a placeholder (`<synthetic>`) on locally
+ * synthesized messages, which names no model and must not become its own row.
+ */
+function wolfMessageModel(message: Record<string, unknown> | null | undefined): {
+  readonly model: string | undefined;
+  /** False when the id came from the alias fallback on a placeholder. */
+  readonly authoritative: boolean;
+} {
+  const responseModel = message?.["responseModel"];
+  const placeholder = typeof responseModel === "string" && responseModel.startsWith("<");
+  const resolved =
+    typeof responseModel === "string" && !placeholder ? responseModel : message?.["model"];
+  return {
+    model: qualifiedWolfModel(message?.["provider"], resolved),
+    authoritative: !placeholder,
+  };
+}
+
+function readWolfUsageTotals(raw: unknown): UsageTokenTotals | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const usage = raw as Record<string, unknown>;
+  const read = (key: string): number => {
+    const value = usage[key];
+    return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
+  };
+  return {
+    uncachedInputTokens: read("input"),
+    cachedInputTokens: read("cacheRead"),
+    cacheCreationTokens: read("cacheWrite"),
+    outputTokens: read("output"),
+    reasoningTokens: read("reasoning"),
+  };
+}
+
+function readWolfCostUsd(raw: unknown): number | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const cost = (raw as Record<string, unknown>)["cost"];
+  if (typeof cost !== "object" || cost === null) return null;
+  const total = (cost as Record<string, unknown>)["total"];
+  return typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : null;
+}
+
+/**
+ * Parses one line of a Wolf session file.
+ *
+ * Sessions are an append-only tree: every entry has a stable id and each LLM
+ * call is written exactly once, so the entry id is a sound dedupe key even
+ * across forks and branch switches, which duplicate ancestry by reference
+ * rather than by rewriting entries.
+ */
+export function parseWolfLine(
+  line: string,
+  sessionIdFallback: string,
+  state: WolfScanState,
+): UsageRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const entry = parsed as Record<string, unknown>;
+
+  const entryType = entry["type"];
+  if (typeof entryType !== "string") return null;
+
+  // Carries no usage of its own; it only moves the active model forward.
+  if (entryType === "model_change") {
+    const declared = qualifiedWolfModel(entry["provider"], entry["modelId"]);
+    if (declared) state.declaredModel = declared;
+    return null;
+  }
+
+  if (!WOLF_USAGE_ENTRY_TYPES.has(entryType)) return null;
+
+  // An assistant message nests usage and model under `message`; the other
+  // entry kinds carry usage at the top level.
+  const message = entry["message"];
+  const messageRecord =
+    typeof message === "object" && message !== null ? (message as Record<string, unknown>) : null;
+  if (entryType === "message" && messageRecord?.["role"] !== "assistant") return null;
+
+  const usageSource = messageRecord?.["usage"] ?? entry["usage"];
+  const totals = readWolfUsageTotals(usageSource);
+  if (totals === null || totalTokens(totals) === 0) return null;
+
+  const timestamp = entry["timestamp"];
+  const timestampMs = typeof timestamp === "string" ? Date.parse(timestamp) : Number.NaN;
+  if (!Number.isFinite(timestampMs)) return null;
+
+  // An assistant message names its own model and also advances the session's
+  // active model; the other entry kinds inherit it, since Wolf bills them at
+  // that model's rate without recording which one it was.
+  const stamped = wolfMessageModel(messageRecord);
+  // A placeholder resolution must not downgrade an already-concrete id.
+  if (stamped.model && stamped.authoritative) state.resolvedModel = stamped.model;
+  // Prefer a concrete id over a declaration, which is frequently an alias.
+  const model = stamped.model ?? state.resolvedModel ?? state.declaredModel ?? "unknown";
+
+  const entryId = entry["id"];
+  return {
+    provider: "wolf",
+    timestampMs,
+    model,
+    sessionId: sessionIdFallback,
+    totals,
+    reportedCostUsd: readWolfCostUsd(usageSource),
+    dedupeKey: typeof entryId === "string" && entryId.length > 0 ? `wolf:${entryId}` : null,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Grok                                                                       */
+/* -------------------------------------------------------------------------- */
 
 /**
  * Parses one line of a Grok Build `updates.jsonl` session log.

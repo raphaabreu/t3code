@@ -89,7 +89,10 @@ const serviceLayers = (input: {
       ),
     ),
     Layer.provideMerge(
-      Layer.succeed(HostProcessEnvironment, { GROK_HOME: NodePath.join(input.home, "grok") }),
+      Layer.succeed(HostProcessEnvironment, {
+        GROK_HOME: NodePath.join(input.home, "grok"),
+        WOLF_CODING_AGENT_SESSION_DIR: NodePath.join(input.home, "wolf"),
+      }),
     ),
   );
 
@@ -98,6 +101,48 @@ function totalOutputTokens(summary: { buckets: readonly { totals: { outputTokens
 }
 
 describe("UsageService", () => {
+  it.live("includes saved Wolf tokens and reported costs alongside other providers", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, claudeLine(1, 5)));
+      const wolfDir = NodePath.join(home, "wolf");
+      yield* Effect.promise(() => NodeFSP.mkdir(wolfDir));
+      const lines = [
+        { type: "model_change", provider: "openai-codex", modelId: "gpt-5.6-sol" },
+        {
+          type: "session_title",
+          id: "saved-title",
+          timestamp: "2026-08-01T10:00:00Z",
+          usage: { input: 100, output: 7, cost: { total: 0.25 } },
+        },
+        {
+          type: "branch_summary",
+          id: "saved-branch",
+          timestamp: "2026-08-01T10:01:00Z",
+          usage: { input: 50, output: 3, cost: { total: 0.1 } },
+        },
+      ];
+      yield* Effect.promise(() =>
+        NodeFSP.writeFile(
+          NodePath.join(wolfDir, "saved-session.jsonl"),
+          lines.map((line) => JSON.stringify(line)).join("\n") + "\n",
+        ),
+      );
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(serviceLayers({ prefix: "usage-service-wolf-test", home, settings })),
+      );
+      const first = yield* service.readSummary(WINDOW);
+      assert.strictEqual(totalOutputTokens(first), 15);
+      assert.closeTo(
+        first.buckets.reduce((total, bucket) => total + bucket.costUsd, 0),
+        0.35,
+        1e-12,
+      );
+      const second = yield* service.readSummary(WINDOW);
+      assert.deepStrictEqual(second.buckets, first.buckets);
+    }).pipe(Effect.scoped),
+  );
+
   it.live("reprices unchanged transcripts when custom prices are added, edited, or removed", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;

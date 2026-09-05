@@ -22,6 +22,9 @@ import type { UsageProviderKind } from "@t3tools/contracts";
 
 import {
   initialCodexScanState,
+  initialWolfScanState,
+  parseWolfLine,
+  type WolfScanState,
   mightCarryUsage,
   parseClaudeLine,
   parseCodexLine,
@@ -56,6 +59,8 @@ export interface TranscriptParsePosition {
   readonly guardHash: number;
   /** Codex reducer state as of `resumeOffset`; `null` for stateless providers. */
   readonly codexState: CodexScanState | null;
+  /** Wolf model attribution at the last complete line. */
+  readonly wolfState?: WolfScanState;
 }
 
 export interface TranscriptParseResult {
@@ -204,20 +209,35 @@ export async function readTranscriptRecords(
 
   try {
     let codexState = initialCodexScanState();
+    let wolfState = initialWolfScanState();
+    const wolfSessionId = NodePath.basename(filePath, ".jsonl");
     let resumed = false;
     let start = 0;
     if (
       resumeFrom !== undefined &&
       resumeFrom.resumeOffset > 0 &&
       (provider !== "codex" || resumeFrom.codexState !== null) &&
+      (provider !== "wolf" || resumeFrom.wolfState !== undefined) &&
       (await guardMatches(handle, resumeFrom))
     ) {
       if (resumeFrom.codexState !== null) codexState = { ...resumeFrom.codexState };
+      if (resumeFrom.wolfState !== undefined) wolfState = { ...resumeFrom.wolfState };
       start = resumeFrom.resumeOffset;
       resumed = true;
     }
 
-    const parseLine = (line: string, state: CodexScanState, out: UsageRecord[]): void => {
+    const parseLine = (
+      line: string,
+      state: CodexScanState,
+      wolf: WolfScanState,
+      out: UsageRecord[],
+    ): void => {
+      if (provider === "wolf") {
+        if (!mightCarryUsage(line, provider) && !line.includes('"model_change"')) return;
+        const record = parseWolfLine(line, wolfSessionId, wolf);
+        if (record !== null) out.push(record);
+        return;
+      }
       if (provider === "codex") {
         if (
           !mightCarryUsage(line, provider) &&
@@ -270,7 +290,12 @@ export async function readTranscriptRecords(
       for (;;) {
         const newlineIndex = buffer.indexOf(NEWLINE, lineStart);
         if (newlineIndex === -1) break;
-        parseLine(toLineString(buffer.subarray(lineStart, newlineIndex)), codexState, records);
+        parseLine(
+          toLineString(buffer.subarray(lineStart, newlineIndex)),
+          codexState,
+          wolfState,
+          records,
+        );
         lineStart = newlineIndex + 1;
       }
       resumeOffset += lineStart;
@@ -283,7 +308,8 @@ export async function readTranscriptRecords(
     const tailRecords: UsageRecord[] = [];
     if (pendingChunks.length > 0) {
       const pending = pendingChunks.length === 1 ? pendingChunks[0]! : Buffer.concat(pendingChunks);
-      if (pending.length > 0) parseLine(toLineString(pending), { ...codexState }, tailRecords);
+      if (pending.length > 0)
+        parseLine(toLineString(pending), { ...codexState }, { ...wolfState }, tailRecords);
     }
 
     const guardLength = Math.min(GUARD_LENGTH, resumeOffset);
@@ -302,6 +328,7 @@ export async function readTranscriptRecords(
         guardLength,
         guardHash,
         codexState: provider === "codex" ? codexState : null,
+        ...(provider === "wolf" ? { wolfState } : {}),
       },
       resumed,
     };

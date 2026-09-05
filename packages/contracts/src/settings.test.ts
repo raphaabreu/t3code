@@ -436,6 +436,7 @@ describe("provider enabled defaults", () => {
     expect(defaultEnabledForDriver(ProviderDriverKind.make("codex"))).toBe(true);
     expect(defaultEnabledForDriver(ProviderDriverKind.make("cursor"))).toBe(false);
     expect(defaultEnabledForDriver(ProviderDriverKind.make("grok"))).toBe(false);
+    expect(defaultEnabledForDriver(ProviderDriverKind.make("wolf"))).toBe(false);
     // Unknown fork drivers stay enabled; their own build decides otherwise.
     expect(defaultEnabledForDriver(ProviderDriverKind.make("ollama"))).toBe(true);
   });

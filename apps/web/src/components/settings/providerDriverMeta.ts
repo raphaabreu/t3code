@@ -6,6 +6,7 @@ import {
   GrokSettings,
   OpenCodeSettings,
   ProviderDriverKind,
+  WolfSettings,
 } from "@t3tools/contracts";
 import type * as Schema from "effect/Schema";
 import {
@@ -16,6 +17,7 @@ import {
   type Icon,
   OpenAI,
   OpenCodeIcon,
+  WolfIcon,
 } from "../Icons";
 
 type ProviderSettingsSchema = {
@@ -81,6 +83,13 @@ export const PROVIDER_CLIENT_DEFINITIONS: readonly ProviderClientDefinition[] = 
     label: "Antigravity",
     icon: AntigravityIcon,
     settingsSchema: AntigravitySettings,
+  },
+  {
+    value: ProviderDriverKind.make("wolf"),
+    label: "Wolf",
+    icon: WolfIcon,
+    badgeLabel: "Early Access",
+    settingsSchema: WolfSettings,
   },
 ];
 

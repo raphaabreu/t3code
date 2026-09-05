@@ -86,3 +86,10 @@ current client support.
 
 Model classification has its own [manifest constraints](./model-manifest.md). Assistant-reference
 handling is documented under [citations](./assistant-citations.md).
+
+## Wolf
+
+Wolf uses a per-session RPC process through `provider/wolf` and the Wolf adapter.
+It ingests attachments as file paths in the prompt and runs tools without a permission system;
+approval modes emit a configuration warning. Native session history supplies token and cost
+records, including titles, goals, compactions, and branch summaries.

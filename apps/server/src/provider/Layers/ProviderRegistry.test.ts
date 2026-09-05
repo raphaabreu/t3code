@@ -2509,6 +2509,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
               const cursorProvider = providers.find(
                 (provider) => provider.instanceId === ProviderInstanceId.make("cursor"),
               );
+              const wolfProvider = providers.find(
+                (provider) => provider.instanceId === ProviderInstanceId.make("wolf"),
+              );
 
               assert.deepStrictEqual(providers.map((provider) => provider.instanceId).toSorted(), [
                 "antigravity",
@@ -2517,6 +2520,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 "cursor",
                 "grok",
                 "opencode",
+                "wolf",
               ]);
               assert.strictEqual(cursorProvider?.enabled, false);
               assert.strictEqual(cursorProvider?.status, "disabled");
@@ -2525,6 +2529,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsModule.layerTest(), Te
                 "Cursor is disabled in T3 Code settings.",
               );
               assert.strictEqual(cursorSpawned, false);
+              // Wolf is opt-in for the same reason, so a default install must
+              // not probe it either.
+              assert.strictEqual(wolfProvider?.enabled, false);
+              assert.strictEqual(wolfProvider?.status, "disabled");
             }).pipe(Effect.provide(runtimeServices));
           }),
       );

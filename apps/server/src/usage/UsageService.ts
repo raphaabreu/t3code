@@ -40,6 +40,7 @@ import * as Semaphore from "effect/Semaphore";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 
 import { ServerConfig } from "../config.ts";
+import { resolveWolfUsageDirectory } from "./wolfUsagePaths.ts";
 import { expandHomePath } from "../pathExpansion.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { resolveClaudeHomePath } from "../provider/Drivers/ClaudeHome.ts";
@@ -268,6 +269,7 @@ export const make = Effect.gen(function* () {
         dir: path.join(grokHome, "sessions"),
         fileName: "updates.jsonl",
       },
+      { provider: "wolf" as const, dir: resolveWolfUsageDirectory(hostEnvironment) },
     ];
   });
 

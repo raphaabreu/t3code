@@ -7,6 +7,7 @@ import * as NodePath from "node:path";
 
 import { afterEach, assert, beforeEach, describe, it } from "@effect/vitest";
 
+import { decodeScanCache, encodeScanCache } from "./usageScanCache.ts";
 import { readTranscriptRecords } from "./usageTranscriptReader.ts";
 
 let dir: string;
@@ -61,6 +62,59 @@ function codexUsageLine(outputTokens: number, secondsOffset: number): string {
 }
 
 describe("readTranscriptRecords resume", () => {
+  it("preserves Wolf model attribution through a disk cache reload and an incomplete tail", async () => {
+    const path = NodePath.join(dir, "wolf-session.jsonl");
+    const model = JSON.stringify({
+      type: "model_change",
+      provider: "openai-codex",
+      modelId: "gpt-5.6-sol",
+    });
+    const title = (id: string) =>
+      JSON.stringify({
+        type: "session_title",
+        id,
+        timestamp: "2026-08-01T10:00:00Z",
+        usage: { input: 100, output: 5, cost: { total: 0.25 } },
+      });
+    await NodeFSP.writeFile(path, model + "\n" + title("first"));
+    const first = await readTranscriptRecords(path, "wolf");
+    assert.isNotNull(first);
+    assert.strictEqual(first.tailRecords.length, 1);
+    const cache = decodeScanCache(
+      JSON.parse(
+        JSON.stringify(
+          encodeScanCache(
+            new Map([
+              [
+                path,
+                {
+                  size: (await NodeFSP.stat(path)).size,
+                  mtimeMs: 1,
+                  provider: "wolf" as const,
+                  records: first.records,
+                  tailRecords: first.tailRecords,
+                  position: first.position,
+                },
+              ],
+            ]),
+          ),
+        ),
+      ),
+    );
+    const cached = cache.get(path);
+    assert.isDefined(cached);
+    await NodeFSP.appendFile(path, "\n" + title("second") + "\n");
+    const next = await readTranscriptRecords(path, "wolf", cached.position);
+    assert.isNotNull(next);
+    assert.isTrue(next.resumed);
+    assert.strictEqual(next.records.length, 2);
+    assert.strictEqual(next.records[1]?.model, "openai-codex/gpt-5.6-sol");
+    assert.strictEqual(next.records[1]?.reportedCostUsd, 0.25);
+    const full = await readTranscriptRecords(path, "wolf");
+    assert.isNotNull(full);
+    assert.deepStrictEqual([...cached.records, ...next.records], full.records);
+  });
+
   it("parses only appended lines when resuming a grown file", async () => {
     const path = NodePath.join(dir, "claude.jsonl");
     await NodeFSP.writeFile(path, claudeLine(1, 5) + claudeLine(2, 7));
