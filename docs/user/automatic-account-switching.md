@@ -8,8 +8,8 @@ saved setting. New threads keep the choice with their draft until the first mess
 
 The selected model and account stay in use until a detected usage limit interrupts the turn.
 T3 Code then asks the configured account selector for a compatible account and continues the
-interrupted request. Changing the model on the same account does not turn off the setting. Explicitly picking a
-different account turns off automatic routing so that account is used for the next message.
+interrupted request. Changing the model or selecting a different compatible account preserves auto-switch.
+The selected account is used for the next message and remains eligible for automatic failover.
 Uncheck the control to
 stop future automatic switches; this does not switch back to an earlier account.
 

@@ -21,22 +21,19 @@ export function orderComposerProviderInstanceCandidates(input: {
       ? input.draft.activeProvider
       : null;
 
-  if (input.threadModelSelection?.credentialMode === "automatic") {
+  if (input.threadModelSelection) {
     return [
       explicitFixedDraftInstanceId,
-      input.sessionInstanceId,
       input.threadModelSelection.instanceId,
+      input.sessionInstanceId,
       input.draft.activeProvider,
       input.projectInstanceId,
     ].filter((candidate): candidate is ProviderInstanceId => candidate != null);
   }
 
-  return [
-    input.draft.activeProvider,
-    input.sessionInstanceId,
-    input.threadModelSelection?.instanceId,
-    input.projectInstanceId,
-  ].filter((candidate): candidate is ProviderInstanceId => candidate != null);
+  return [input.draft.activeProvider, input.sessionInstanceId, input.projectInstanceId].filter(
+    (candidate): candidate is ProviderInstanceId => candidate != null,
+  );
 }
 
 export function resolveComposerCredentialMode(input: {

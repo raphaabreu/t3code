@@ -6764,8 +6764,7 @@ function ChatViewContent(props: ChatViewProps) {
       const nextModelSelection: ModelSelection = {
         instanceId,
         model: resolvedModel,
-        ...(!isExplicitAccountChange &&
-        (resolvedDriverKind === "codex" || resolvedDriverKind === "claudeAgent") &&
+        ...((resolvedDriverKind === "codex" || resolvedDriverKind === "claudeAgent") &&
         currentSelection?.credentialMode === "automatic"
           ? { credentialMode: "automatic" as const }
           : {}),
@@ -6786,8 +6785,7 @@ function ChatViewContent(props: ChatViewProps) {
         scheduleComposerFocus();
         return;
       }
-      // An explicit account pick opts out of routing, as it did in the picker.
-      // Save that choice now so the session and the separate checkbox agree.
+      // Save the requested account without changing the session failover policy.
       if (
         isExplicitAccountChange &&
         isServerThread &&
@@ -6797,7 +6795,7 @@ function ChatViewContent(props: ChatViewProps) {
         try {
           const result = await updateThreadMetadata({
             environmentId,
-            input: { threadId: activeThread.id, credentialMode: null },
+            input: { threadId: activeThread.id, modelSelection: nextModelSelection },
           });
           if (result._tag === "Failure") {
             if (!isAtomCommandInterrupted(result))

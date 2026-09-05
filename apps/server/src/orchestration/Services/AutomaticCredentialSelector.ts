@@ -7,7 +7,6 @@ import type { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 export interface AutomaticCredentialSelectorShape {
   readonly resolve: (input: {
     readonly selection: ModelSelection;
-    readonly currentInstanceId?: ProviderInstanceId | undefined;
   }) => Effect.Effect<ModelSelection, ProviderAdapterRequestError>;
 
   readonly markUnavailable: (input: {

@@ -86,9 +86,23 @@ selectorLayer("AutomaticCredentialSelector", (it) => {
           model: "gpt-5.4",
           credentialMode: "automatic",
         },
-        currentInstanceId: anchorInstanceId,
       });
       expect(resolved.instanceId).toBe(anchorInstanceId);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps auto mode when the user selects another healthy account", () =>
+    Effect.gen(function* () {
+      yield* withHelperPath("/path/that/must/not/run");
+      const selector = yield* AutomaticCredentialSelector;
+      const resolved = yield* selector.resolve({
+        selection: {
+          instanceId: pickedInstanceId,
+          model: "gpt-5.4",
+          credentialMode: "automatic",
+        },
+      });
+      expect(resolved).toMatchObject({ instanceId: pickedInstanceId, credentialMode: "automatic" });
     }).pipe(Effect.scoped),
   );
 
@@ -123,7 +137,6 @@ selectorLayer("AutomaticCredentialSelector", (it) => {
           model: "gpt-5.4",
           credentialMode: "automatic",
         },
-        currentInstanceId: anchorInstanceId,
       });
       expect(resolved.instanceId).toBe(pickedInstanceId);
       expect(decodeHelperArgs(NodeFS.readFileSync(argsPath, "utf8"))).toEqual([

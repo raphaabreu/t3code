@@ -405,13 +405,7 @@ describe("ProviderCommandReactor", () => {
       }),
     ).pipe(Layer.provide(orchestrationLayer));
     const automaticCredentialResolve = vi.fn(
-      input?.automaticCredentialResolve ??
-        (({ selection, currentInstanceId }) =>
-          Effect.succeed(
-            selection.credentialMode === "automatic" && currentInstanceId
-              ? { ...selection, instanceId: currentInstanceId }
-              : selection,
-          )),
+      input?.automaticCredentialResolve ?? (({ selection }) => Effect.succeed(selection)),
     );
     const layer = ProviderCommandReactorLive.pipe(
       Layer.provideMerge(reactorOrchestrationLayer),
@@ -599,10 +593,10 @@ describe("ProviderCommandReactor", () => {
     const selectedInstanceId = ProviderInstanceId.make("codex_personal");
     const harness = await createHarness({
       threadModelSelection: automaticSelection,
-      automaticCredentialResolve: ({ selection, currentInstanceId }) =>
+      automaticCredentialResolve: ({ selection }) =>
         Effect.succeed({
           ...selection,
-          instanceId: currentInstanceId ?? selectedInstanceId,
+          instanceId: selectedInstanceId,
         }),
     });
 
@@ -618,7 +612,10 @@ describe("ProviderCommandReactor", () => {
             text: `turn ${index}`,
             attachments: [],
           },
-          modelSelection: automaticSelection,
+          modelSelection:
+            index === 1
+              ? automaticSelection
+              : { ...automaticSelection, instanceId: selectedInstanceId },
           runtimeMode: "approval-required",
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           createdAt: "2026-01-01T00:00:00.000Z",
@@ -630,7 +627,7 @@ describe("ProviderCommandReactor", () => {
     expect(harness.startSession).toHaveBeenCalledTimes(1);
     expect(harness.sendTurn).toHaveBeenCalledTimes(2);
     expect(harness.automaticCredentialResolve).toHaveBeenCalledTimes(2);
-    expect(harness.automaticCredentialResolve.mock.calls[1]?.[0].currentInstanceId).toBe(
+    expect(harness.automaticCredentialResolve.mock.calls[1]?.[0].selection.instanceId).toBe(
       selectedInstanceId,
     );
   });
@@ -2050,67 +2047,76 @@ describe("ProviderCommandReactor", () => {
     expect(harness.stopSession.mock.calls.length).toBe(0);
   });
 
-  it("restarts an existing Codex thread on a compatible requested instance", async () => {
-    const harness = await createHarness();
-    const now = "2026-01-01T00:00:00.000Z";
+  it.each([undefined, "automatic"] as const)(
+    "switches compatible accounts while preserving %s credential mode",
+    async (credentialMode) => {
+      const harness = await createHarness();
+      const now = "2026-01-01T00:00:00.000Z";
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-compatible-codex-1"),
-        threadId: ThreadId.make("thread-1"),
-        message: {
-          messageId: asMessageId("user-message-compatible-codex-1"),
-          role: "user",
-          text: "first",
-          attachments: [],
-        },
-        modelSelection: {
-          instanceId: ProviderInstanceId.make("codex"),
-          model: "gpt-5-codex",
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: now,
-      }),
-    );
+      await harness.runEffect(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-compatible-codex-1"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-compatible-codex-1"),
+            role: "user",
+            text: "first",
+            attachments: [],
+          },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+            ...(credentialMode ? { credentialMode } : {}),
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
 
-    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      await harness.drain();
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-compatible-codex-2"),
-        threadId: ThreadId.make("thread-1"),
-        message: {
-          messageId: asMessageId("user-message-compatible-codex-2"),
-          role: "user",
-          text: "second",
-          attachments: [],
-        },
-        modelSelection: {
-          instanceId: ProviderInstanceId.make("codex_work"),
-          model: "gpt-5-codex",
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: "2026-01-01T00:00:00.000Z",
-      }),
-    );
+      await harness.runEffect(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-compatible-codex-2"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-compatible-codex-2"),
+            role: "user",
+            text: "second",
+            attachments: [],
+          },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex_work"),
+            model: "gpt-5-codex",
+            ...(credentialMode ? { credentialMode } : {}),
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
 
-    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+      await harness.drain();
 
-    expect(harness.startSession).toHaveBeenCalledTimes(2);
-    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
-      provider: ProviderDriverKind.make("codex"),
-      providerInstanceId: ProviderInstanceId.make("codex_work"),
-      resumeCursor: { opaque: "resume-1" },
-    });
+      expect(harness.startSession).toHaveBeenCalledTimes(2);
+      expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex_work"),
+        resumeCursor: { opaque: "resume-1" },
+      });
 
-    const readModel = await harness.readModel();
-    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-    expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_work"));
-  });
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_work"));
+      expect(thread?.modelSelection.credentialMode).toBe(credentialMode);
+      expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
+        modelSelection: { instanceId: ProviderInstanceId.make("codex_work") },
+      });
+    },
+  );
 
   it("restarts the provider session when the thread workspace changes", async () => {
     const harness = await createHarness({

@@ -979,7 +979,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Resolve which configured instance the composer is currently targeting.
   // Priority:
   //   1. An explicit fixed-account pick from the composer draft.
-  //   2. The live session instance while automatic routing remains enabled.
+  //   2. The saved account selection while automatic routing remains enabled.
   //   3. The remaining draft/thread/project fallbacks.
   //   4. First enabled entry matching the current driver kind.
   //   5. First enabled entry overall / default instance for the kind.

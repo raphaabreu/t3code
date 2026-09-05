@@ -659,6 +659,22 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.cwd.effective": effectiveCwd ?? "",
         });
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
+        // Compatible accounts share the native transcript. Release its writer
+        // before resuming it in a different adapter, including after a failed turn.
+        if (
+          persistedInstanceId !== undefined &&
+          persistedInstanceId !== resolvedInstanceId &&
+          persistedContinuationIsCompatible &&
+          effectiveResumeCursor !== undefined
+        ) {
+          const previousAdapter = yield* registry.getByInstance(persistedInstanceId);
+          if (yield* previousAdapter.hasSession(threadId)) {
+            yield* previousAdapter.stopSession(threadId);
+            yield* analytics.record("provider.session.stopped", {
+              provider: previousAdapter.provider,
+            });
+          }
+        }
         yield* prepareMcpSession(threadId, resolvedInstanceId);
         const session = yield* adapter
           .startSession({

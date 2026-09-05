@@ -150,19 +150,11 @@ const make = Effect.gen(function* () {
       );
     }
 
-    // Auto is failover-only. Before a session exists, the selection shown in
-    // the composer is the current credential; once a session exists, its
-    // bound instance is authoritative. Do not invoke ccp/cdp until that
-    // credential is known unavailable.
-    const currentInstanceId = input.currentInstanceId ?? input.selection.instanceId;
-    const current = providers.find((provider) => provider.instanceId === currentInstanceId);
-    if (
-      current &&
-      current.driver === anchor.driver &&
-      current.continuation?.groupKey === anchor.continuation?.groupKey &&
-      !isUnavailableNow(current.instanceId, now)
-    ) {
-      return { ...input.selection, instanceId: current.instanceId };
+    // The saved selection is the user's requested account. Failover persists its
+    // replacement there too, so subsequent turns keep it until another selection
+    // or usage limit. A still-bound session must not override an account pick.
+    if (!isUnavailableNow(anchor.instanceId, now)) {
+      return input.selection;
     }
 
     const excludedInstanceIds = [...unavailableUntil.entries()].flatMap(([instanceId, retryAt]) =>

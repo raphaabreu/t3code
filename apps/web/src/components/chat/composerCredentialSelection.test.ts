@@ -19,7 +19,7 @@ function selection(instanceId: ProviderInstanceId, credentialMode?: "automatic")
 }
 
 describe("composer credential selection", () => {
-  it("shows the live session account while automatic routing remains enabled", () => {
+  it("shows the persisted replacement account after automatic failover", () => {
     const automaticSelection = selection(AUTOMATIC_INSTANCE, "automatic");
 
     expect(
@@ -30,7 +30,41 @@ describe("composer credential selection", () => {
           modelSelectionExplicit: true,
         },
         sessionInstanceId: FAILED_OVER_INSTANCE,
-        threadModelSelection: automaticSelection,
+        threadModelSelection: selection(FAILED_OVER_INSTANCE, "automatic"),
+        projectInstanceId: null,
+      })[0],
+    ).toBe(FAILED_OVER_INSTANCE);
+  });
+
+  it("shows a newly selected account while the previous session is still bound", () => {
+    expect(
+      orderComposerProviderInstanceCandidates({
+        draft: {
+          activeProvider: AUTOMATIC_INSTANCE,
+          modelSelectionByProvider: {
+            [AUTOMATIC_INSTANCE]: selection(AUTOMATIC_INSTANCE, "automatic"),
+          },
+          modelSelectionExplicit: true,
+        },
+        sessionInstanceId: AUTOMATIC_INSTANCE,
+        threadModelSelection: selection(FIXED_INSTANCE, "automatic"),
+        projectInstanceId: null,
+      })[0],
+    ).toBe(FIXED_INSTANCE);
+  });
+
+  it("keeps the replacement account when auto-switch is turned off after failover", () => {
+    expect(
+      orderComposerProviderInstanceCandidates({
+        draft: {
+          activeProvider: AUTOMATIC_INSTANCE,
+          modelSelectionByProvider: {
+            [AUTOMATIC_INSTANCE]: selection(AUTOMATIC_INSTANCE, "automatic"),
+          },
+          modelSelectionExplicit: true,
+        },
+        sessionInstanceId: FAILED_OVER_INSTANCE,
+        threadModelSelection: selection(FAILED_OVER_INSTANCE),
         projectInstanceId: null,
       })[0],
     ).toBe(FAILED_OVER_INSTANCE);

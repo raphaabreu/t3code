@@ -319,12 +319,7 @@ export const makeOrchestrationIntegrationHarness = (
     );
     const serverSettingsLayer = ServerSettingsService.layerTest();
     const automaticCredentialSelectorLayer = Layer.succeed(AutomaticCredentialSelector, {
-      resolve: ({ selection, currentInstanceId }) =>
-        Effect.succeed(
-          selection.credentialMode === "automatic" && currentInstanceId
-            ? { ...selection, instanceId: currentInstanceId }
-            : selection,
-        ),
+      resolve: ({ selection }) => Effect.succeed(selection),
       markUnavailable: () => Effect.void,
       isUnavailable: () => Effect.succeed(false),
     });

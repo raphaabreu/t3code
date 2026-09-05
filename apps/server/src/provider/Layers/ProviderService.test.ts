@@ -1351,6 +1351,37 @@ routing.layer("ProviderServiceLive routing", (it) => {
     }),
   );
 
+  it.effect("releases the shared session writer before starting a compatible account", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-compatible-active-switch");
+      const initial = yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId,
+        cwd: "/tmp/project-compatible-active-switch",
+        runtimeMode: "full-access",
+      });
+      const startReplacement = routing.claudeWork.startSession.getMockImplementation()!;
+      routing.claudeWork.startSession.mockImplementationOnce((input) =>
+        Effect.gen(function* () {
+          assert.equal(yield* routing.claude.hasSession(threadId), false);
+          assert.deepEqual(input.resumeCursor, initial.resumeCursor);
+          return yield* startReplacement(input);
+        }),
+      );
+      const replacement = yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeWorkInstanceId,
+        threadId,
+        cwd: "/tmp/project-compatible-active-switch",
+        runtimeMode: "full-access",
+      });
+      assert.equal(replacement.providerInstanceId, claudeWorkInstanceId);
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
   it.effect("resumes a stopped session on a compatible provider instance", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService.ProviderService;

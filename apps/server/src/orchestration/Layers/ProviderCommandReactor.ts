@@ -564,9 +564,6 @@ const make = Effect.gen(function* () {
         : (thread.session?.providerInstanceId ?? thread.modelSelection.instanceId);
     const desiredModelSelection = yield* automaticCredentialSelector.resolve({
       selection: requestedModelSelection ?? thread.modelSelection,
-      ...(thread.session?.providerInstanceId !== undefined
-        ? { currentInstanceId: thread.session.providerInstanceId }
-        : {}),
     });
     const desiredInstanceId = desiredModelSelection.instanceId;
     const currentInfo = yield* providerService.getInstanceInfo(currentInstanceId).pipe(
