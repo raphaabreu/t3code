@@ -1,3 +1,4 @@
+import { vi } from "vite-plus/test";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -34,6 +35,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 import { it as effectIt } from "@effect/vitest";
@@ -55,10 +57,18 @@ import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
-import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import {
+  ProviderRuntimeIngestionLive,
+  isExplicitUsageLimitMessage,
+  credentialFailureSignalFromRuntimeEvent,
+} from "./ProviderRuntimeIngestion.ts";
 import { DEFAULT_THREAD_TITLE } from "../threadTitles.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
+import {
+  AutomaticCredentialSelector,
+  type AutomaticCredentialSelectorShape,
+} from "../Services/AutomaticCredentialSelector.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -74,6 +84,8 @@ const asItemId = (value: string): ProviderItemId => ProviderItemId.make(value);
 const asEventId = (value: string): EventId => EventId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asThreadId = (value: string): ThreadId => ThreadId.make(value);
+const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
+
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 
 type LegacyProviderRuntimeEvent = {
@@ -115,6 +127,7 @@ function createProviderServiceHarness() {
   );
   const runtimeSessions: ProviderSession[] = [];
 
+  const stopSession = vi.fn(() => Effect.void);
   const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
   const service: ProviderServiceShape = {
     startSession: () => unsupported(),
@@ -123,7 +136,7 @@ function createProviderServiceHarness() {
     interruptTurn: () => unsupported(),
     respondToRequest: () => unsupported(),
     respondToUserInput: () => unsupported(),
-    stopSession: () => unsupported(),
+    stopSession,
     listSessions: () => Effect.succeed([...runtimeSessions]),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
     assertConversationRollbackSupported: () => unsupported(),
@@ -198,6 +211,7 @@ function createProviderServiceHarness() {
   return {
     service,
     emit,
+    stopSession,
     emitAndWaitForEnqueue,
     setSession,
   };
@@ -274,6 +288,9 @@ describe("ProviderRuntimeIngestion", () => {
     NodeFS.mkdirSync(workspaceRoot, { recursive: true });
     const provider = createProviderServiceHarness();
     const sqlCounter = makeSqlStatementCounter();
+    const markUnavailable = vi.fn<AutomaticCredentialSelectorShape["markUnavailable"]>(
+      () => Effect.void,
+    );
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(OrchestrationProjectionPipelineLive),
@@ -298,6 +315,13 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
       Layer.provideMerge(CheckpointStore.layer.pipe(Layer.provide(VcsDriverRegistry.layer))),
       Layer.provideMerge(VcsProcess.layer),
+      Layer.provideMerge(
+        Layer.succeed(AutomaticCredentialSelector, {
+          resolve: ({ selection }) => Effect.succeed(selection),
+          markUnavailable,
+          isUnavailable: () => Effect.succeed(false),
+        }),
+      ),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
       Layer.provideMerge(Layer.succeed(Tracer.Tracer, sqlCounter.tracer)),
@@ -372,6 +396,7 @@ describe("ProviderRuntimeIngestion", () => {
 
     return {
       engine,
+      markUnavailable,
       dispatch,
       readModel: () => testRuntime.runPromise(snapshotQuery.getSnapshot()),
       readThreadShell: () =>
@@ -383,10 +408,350 @@ describe("ProviderRuntimeIngestion", () => {
       emit: provider.emit,
       emitAndDrain,
       sqlCount: sqlCounter.count,
+      stopSession: provider.stopSession,
       setProviderSession: provider.setSession,
       drain,
     };
   }
+
+  it("does not treat quota snapshots as confirmed blocked turns", () => {
+    expect(isExplicitUsageLimitMessage("429: usage limit reached")).toBe(true);
+    expect(isExplicitUsageLimitMessage("connection reset by peer")).toBe(false);
+    expect(
+      credentialFailureSignalFromRuntimeEvent({
+        type: "account.rate-limits.updated",
+        eventId: asEventId("evt-rate-warning"),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: ProviderInstanceId.make("ccp_one"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: {
+          limits: {
+            windows: [{ id: "session", kind: "session", label: "Session", usedPercent: 96 }],
+          },
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      credentialFailureSignalFromRuntimeEvent({
+        type: "account.rate-limits.updated",
+        eventId: asEventId("evt-rate-rejected"),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: ProviderInstanceId.make("ccp_one"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: {
+          limits: {
+            windows: [
+              {
+                id: "session",
+                kind: "session",
+                label: "Session",
+                usedPercent: 100,
+                resetsAt: "2026-01-01T00:00:00.000Z",
+              },
+            ],
+          },
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("requests one continuation after a confirmed limit in automatic mode", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.dispatch({
+      type: "thread.meta.update",
+      commandId: CommandId.make("cmd-enable-automatic-credentials"),
+      threadId: asThreadId("thread-1"),
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+        credentialMode: "automatic",
+      },
+    });
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-original-turn"),
+      threadId: asThreadId("thread-1"),
+      message: {
+        messageId: asMessageId("message-original"),
+        role: "user",
+        text: "Implement the requested change",
+        attachments: [],
+      },
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+        credentialMode: "automatic",
+      },
+      runtimeMode: "approval-required",
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      createdAt: now,
+    });
+
+    harness.emit({
+      type: "account.rate-limits.updated",
+      eventId: asEventId("evt-codex-limit"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-1"),
+      payload: {
+        rateLimits: { rateLimitReachedType: "workspace_member_usage_limit_reached" },
+      },
+    });
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("evt-codex-limit-error"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-1"),
+      payload: { message: "Usage limit reached" },
+    });
+    await harness.drain();
+
+    const beforeCompletion = await harness.readModel();
+    expect(
+      beforeCompletion.threads[0]?.messages.filter((message) => message.role === "user"),
+    ).toHaveLength(1);
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-codex-limit-completed"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId: asTurnId("turn-1"),
+      payload: { state: "failed", errorMessage: "Usage limit reached" },
+    });
+    await harness.drain();
+
+    const snapshot = await harness.readModel();
+    const thread = snapshot.threads.find((entry) => entry.id === "thread-1");
+    const userMessages = thread?.messages.filter((message) => message.role === "user") ?? [];
+    expect(userMessages).toHaveLength(2);
+    const continuation = userMessages.find((message) =>
+      message.text.startsWith("[Automatic credential failover]"),
+    );
+    expect(continuation?.text).toContain("Implement the requested change");
+  });
+
+  it.each([
+    { automatic: true, runtimeError: true, completionMessage: true, expected: 1 },
+    { automatic: true, runtimeError: true, completionMessage: false, expected: 1 },
+    { automatic: true, runtimeError: false, completionMessage: true, expected: 1 },
+    { automatic: false, runtimeError: true, completionMessage: true, expected: 0 },
+  ])(
+    "recovers a Claude subscription denial: %j",
+    async ({ automatic, runtimeError, completionMessage, expected }) => {
+      const harness = await createHarness();
+      const threadId = asThreadId("thread-1");
+      const instanceId = ProviderInstanceId.make("claudeAgent");
+      const denial =
+        "Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access";
+      const base = {
+        provider: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: instanceId,
+        threadId,
+        turnId: asTurnId("access-denied-turn"),
+        createdAt: "2026-09-05T13:59:11.746Z",
+      };
+      await harness.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-subscription-policy"),
+        threadId,
+        modelSelection: {
+          instanceId,
+          model: "claude-opus-5",
+          ...(automatic ? { credentialMode: "automatic" as const } : {}),
+        },
+      });
+      await harness.emitAndDrain([
+        { ...base, type: "turn.started", eventId: asEventId("access-started") },
+      ]);
+      if (runtimeError) {
+        await harness.emitAndDrain([
+          {
+            ...base,
+            type: "runtime.error",
+            eventId: asEventId("access-runtime-error"),
+            payload: { message: denial, class: "provider_error" },
+          },
+        ]);
+        expect((await harness.readModel()).threads[0]?.messages).toHaveLength(0);
+      }
+      const completed = {
+        ...base,
+        type: "turn.completed",
+        eventId: asEventId("access-completed"),
+        payload: { state: "failed", ...(completionMessage ? { errorMessage: denial } : {}) },
+      };
+      await harness.emitAndDrain([completed]);
+      await harness.emitAndDrain([
+        { ...completed, eventId: asEventId("access-completed-duplicate") },
+      ]);
+      const thread = (await harness.readModel()).threads[0];
+      const continuations =
+        thread?.messages.filter((message) =>
+          message.text.startsWith("[Automatic credential failover]"),
+        ) ?? [];
+      expect(continuations).toHaveLength(expected);
+      if (expected) {
+        expect(continuations[0]?.text).toContain(
+          "does not have subscription access to Claude Code",
+        );
+        expect(continuations[0]?.text).not.toContain("reached its usage limit");
+      }
+      expect(thread?.modelSelection.credentialMode).toBe(automatic ? "automatic" : undefined);
+      expect(harness.markUnavailable).toHaveBeenCalledWith({
+        instanceId,
+        retryAt: expect.any(Number),
+      });
+    },
+  );
+
+  it.each([
+    { provider: "claudeAgent", type: "runtime.error", message: "403 Forbidden", state: undefined },
+    {
+      provider: "claudeAgent",
+      type: "runtime.error",
+      message: "Permission denied: /workspace/private",
+      state: undefined,
+    },
+    {
+      provider: "codex",
+      type: "runtime.error",
+      message: "Your organization has disabled Claude subscription access for Claude Code",
+      state: undefined,
+    },
+    {
+      provider: "claudeAgent",
+      type: "runtime.warning",
+      message: "Your organization has disabled Claude subscription access for Claude Code",
+      state: undefined,
+    },
+    {
+      provider: "claudeAgent",
+      type: "turn.completed",
+      message: "Your organization has disabled Claude subscription access for Claude Code",
+      state: "completed",
+    },
+  ])(
+    "does not classify unrelated or non-failing events as account denials: %j",
+    ({ provider, type, message, state }) => {
+      const event = decodeRuntimeEvent({
+        type,
+        eventId: "not-an-account-denial",
+        provider,
+        providerInstanceId: "profile-1",
+        threadId: "thread-1",
+        createdAt: "2026-09-05T13:59:11.746Z",
+        payload: type === "turn.completed" ? { state, errorMessage: message } : { message },
+      });
+      expect(credentialFailureSignalFromRuntimeEvent(event)).toBeUndefined();
+    },
+  );
+
+  it.each([
+    { automatic: true, overage: false, stale: false, continuations: 1 },
+    { automatic: false, overage: false, stale: false, continuations: 0 },
+    { automatic: true, overage: true, stale: false, continuations: 0 },
+    { automatic: true, overage: false, stale: true, continuations: 0 },
+  ])("handles a parked Claude limit: %j", async ({ automatic, overage, stale, continuations }) => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+    await harness.dispatch({
+      type: "thread.meta.update",
+      commandId: CommandId.make("cmd-claude-limit-policy"),
+      threadId,
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-fable-5-1",
+        ...(automatic ? { credentialMode: "automatic" as const } : {}),
+      },
+    });
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("evt-claude-running"),
+        provider: ProviderDriverKind.make("claudeAgent"),
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        threadId,
+        turnId: asTurnId("turn-claude-current"),
+        createdAt: now,
+      },
+    ]);
+    const warning = {
+      type: "runtime.warning",
+      eventId: asEventId("evt-claude-parked"),
+      provider: ProviderDriverKind.make("claudeAgent"),
+      providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+      threadId,
+      turnId: asTurnId(stale ? "turn-claude-old" : "turn-claude-current"),
+      createdAt: now,
+      payload: {
+        message: "Claude usage limit reached. This turn is paused until the limit resets.",
+        detail: { status: "rejected", isUsingOverage: overage },
+      },
+    };
+    await harness.emitAndDrain([warning]);
+    await harness.emitAndDrain([{ ...warning, eventId: asEventId("evt-claude-parked-repeat") }]);
+    expect(harness.stopSession).toHaveBeenCalledTimes(continuations);
+    const snapshot = await harness.readModel();
+    expect(
+      snapshot.threads[0]?.messages.filter((message) =>
+        message.text.startsWith("[Automatic credential failover]"),
+      ),
+    ).toHaveLength(continuations);
+  });
+
+  it("does not fail over automatic credentials for an ordinary runtime error", async () => {
+    const harness = await createHarness();
+    await harness.dispatch({
+      type: "thread.meta.update",
+      commandId: CommandId.make("cmd-enable-automatic-no-limit"),
+      threadId: asThreadId("thread-1"),
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+        credentialMode: "automatic",
+      },
+    });
+    await harness.emitAndDrain([
+      {
+        type: "account.rate-limits.updated",
+        eventId: asEventId("evt-full-quota-without-rejection"),
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        threadId: asThreadId("thread-1"),
+        createdAt: "2026-01-01T00:00:00.000Z",
+        payload: {
+          limits: {
+            windows: [{ id: "session", kind: "session", label: "Session", usedPercent: 100 }],
+          },
+        },
+      },
+    ]);
+    harness.emit({
+      type: "runtime.error",
+      eventId: asEventId("evt-network-error"),
+      provider: ProviderDriverKind.make("codex"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      payload: { message: "connection reset by peer" },
+    });
+    await harness.drain();
+    const snapshot = await harness.readModel();
+    const thread = snapshot.threads.find((entry) => entry.id === "thread-1");
+    expect(thread?.messages).toHaveLength(0);
+  });
 
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();
@@ -911,6 +1276,7 @@ describe("ProviderRuntimeIngestion", () => {
       harness.emit({
         type: "session.exited",
         eventId: asEventId("evt-session-exited-after-stop"),
+        payload: {},
         provider: ProviderDriverKind.make("codex"),
         threadId,
         createdAt: "2026-01-01T00:00:03.000Z",
@@ -918,6 +1284,7 @@ describe("ProviderRuntimeIngestion", () => {
       harness.emit({
         type: "session.exited",
         eventId: asEventId("evt-duplicate-session-exited-after-stop"),
+        payload: {},
         provider: ProviderDriverKind.make("codex"),
         threadId,
         createdAt: "2026-01-01T00:00:04.000Z",

@@ -1212,11 +1212,22 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             );
           }
         }
+        const persistedInstanceId = persistedBinding?.providerInstanceId;
+        const persistedContinuationIsCompatible =
+          persistedInstanceId === resolvedInstanceId ||
+          (persistedInstanceId !== undefined &&
+            (yield* registry.getInstanceInfo(persistedInstanceId).pipe(
+              Effect.map(
+                (persistedInstanceInfo) =>
+                  persistedInstanceInfo.driverKind === instanceInfo.driverKind &&
+                  persistedInstanceInfo.continuationIdentity.continuationKey ===
+                    instanceInfo.continuationIdentity.continuationKey,
+              ),
+              Effect.orElseSucceed(() => false),
+            )));
         const effectiveResumeCursor =
           input.resumeCursor ??
-          (persistedBinding?.providerInstanceId === resolvedInstanceId
-            ? persistedBinding.resumeCursor
-            : undefined);
+          (persistedContinuationIsCompatible ? persistedBinding?.resumeCursor : undefined);
         const effectiveCwd =
           input.cwd ??
           (persistedBinding?.providerInstanceId === resolvedInstanceId
@@ -1227,8 +1238,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.resume_cursor.source":
             input.resumeCursor !== undefined
               ? "request"
-              : effectiveResumeCursor !== undefined &&
-                  persistedBinding?.providerInstanceId === resolvedInstanceId
+              : effectiveResumeCursor !== undefined && persistedContinuationIsCompatible
                 ? "persisted"
                 : "none",
           "provider.resume_cursor.present": effectiveResumeCursor !== undefined,
@@ -1257,6 +1267,22 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         }
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
         yield* clearTurnAnalyticsSession(resolvedInstanceId, threadId);
+        // Compatible accounts share the native transcript. Release its writer
+        // before resuming it in a different adapter, including after a failed turn.
+        if (
+          persistedInstanceId !== undefined &&
+          persistedInstanceId !== resolvedInstanceId &&
+          persistedContinuationIsCompatible &&
+          effectiveResumeCursor !== undefined
+        ) {
+          const previousAdapter = yield* registry.getByInstance(persistedInstanceId);
+          if (yield* previousAdapter.hasSession(threadId)) {
+            yield* previousAdapter.stopSession(threadId);
+            yield* analytics.record("provider.session.stopped", {
+              provider: previousAdapter.provider,
+            });
+          }
+        }
         yield* prepareMcpSession(threadId, resolvedInstanceId);
         const session = yield* adapter
           .startSession({

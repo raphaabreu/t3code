@@ -18,6 +18,7 @@ import IconArrowUpRightCircle from "@tabler/icons-react-native/IconArrowUpRightC
 import IconArrowsMaximize from "@tabler/icons-react-native/IconArrowsMaximize";
 import IconArrowsMinimize from "@tabler/icons-react-native/IconArrowsMinimize";
 import IconBellRinging from "@tabler/icons-react-native/IconBellRinging";
+import IconBoltOff from "@tabler/icons-react-native/IconBoltOff";
 import IconBolt from "@tabler/icons-react-native/IconBolt";
 import IconBox from "@tabler/icons-react-native/IconBox";
 import IconCamera from "@tabler/icons-react-native/IconCamera";
@@ -108,6 +109,8 @@ const ANDROID_ICON_BY_SF_SYMBOL: Partial<Record<SFSymbol, Icon>> = {
   "archivebox.fill": IconArchive,
   "bell.badge": IconBellRinging,
   "bolt.circle": IconBolt,
+  "bolt.fill": IconBolt,
+  "bolt.slash.fill": IconBoltOff,
   "bolt.horizontal.circle": IconBolt,
   camera: IconCamera,
   "chart.bar.xaxis": IconChartBar,

@@ -162,6 +162,7 @@ import {
 import { measureRestingComposerControls } from "./restingComposerControlsMeasurement";
 import { observeResponsiveBreakpointFade, usePanelAnimationSettings } from "../../panelAnimations";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
+import { AutoSwitchControl } from "./AutoSwitchControl";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
@@ -802,6 +803,10 @@ import {
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
+import {
+  orderComposerProviderInstanceCandidates,
+  resolveComposerCredentialMode,
+} from "./composerCredentialSelection";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import { type SessionPhase, type Thread, videoMimeType } from "../../types";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
@@ -1283,6 +1288,8 @@ export interface ChatComposerProps {
 
   onProviderModelSelect: (instanceId: ProviderInstanceId, model: string) => void;
   onOpenProviderSetup: (instanceId: ProviderInstanceId) => void;
+  onCredentialModeChange: (mode: "automatic" | null) => void;
+  isCredentialModeSaving: boolean;
   getModelDisabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
   toggleInteractionMode: () => void;
   handleRuntimeModeChange: (mode: RuntimeMode) => void;
@@ -1312,7 +1319,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadId,
     activeThreadEnvironmentId: _activeThreadEnvironmentId,
     activeThread,
-    isServerThread: _isServerThread,
+    isServerThread,
     isLocalDraftThread: _isLocalDraftThread,
     forceExpandedOnMobile,
     projectSelectionRequired,
@@ -1374,6 +1381,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onChangeActivePendingUserInputCustomAnswer,
     onProviderModelSelect,
     onOpenProviderSetup,
+    onCredentialModeChange,
+    isCredentialModeSaving,
     getModelDisabledReason,
     toggleInteractionMode,
     handleRuntimeModeChange,
@@ -1565,7 +1574,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ),
     [providerStatuses, settings],
   );
-  const selectedProviderByThreadId = composerDraft.activeProvider ?? null;
   const {
     selectedProviderEntry,
     requestedDriverKind,
@@ -1575,12 +1583,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     () =>
       resolveComposerProviderSelection({
         entries: providerInstanceEntries,
-        candidateInstanceIds: [
-          selectedProviderByThreadId,
-          activeThread?.session?.providerInstanceId,
-          activeThreadModelSelection?.instanceId,
-          activeProjectDefaultModelSelection?.instanceId,
-        ],
+        candidateInstanceIds: orderComposerProviderInstanceCandidates({
+          draft: composerDraft,
+          sessionInstanceId: activeThread?.session?.providerInstanceId,
+          threadModelSelection: activeThreadModelSelection,
+          projectInstanceId: activeProjectDefaultModelSelection?.instanceId,
+        }),
         lockedProvider,
         lockedInstanceId:
           activeThread?.session?.providerInstanceId ?? activeThreadModelSelection?.instanceId,
@@ -1589,7 +1597,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       activeProjectDefaultModelSelection?.instanceId,
       activeThread?.session?.providerInstanceId,
       activeThreadModelSelection?.instanceId,
-      selectedProviderByThreadId,
+      composerDraft,
       lockedProvider,
       providerInstanceEntries,
     ],
@@ -1730,10 +1738,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     provider: selectedProviderStatus,
     interactionMode: requestedInteractionMode,
   });
-  const selectedModelSelection = useMemo<ModelSelection>(
-    () => createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
-    [selectedInstanceId, selectedModel, selectedModelOptionsForDispatch],
-  );
+  const selectedCredentialMode = resolveComposerCredentialMode({
+    draft: composerDraft,
+    selectedInstanceId,
+    threadModelSelection: isServerThread ? activeThreadModelSelection : null,
+  });
+  const selectedModelSelection = useMemo<ModelSelection>(() => {
+    const selection = createModelSelection(
+      selectedInstanceId,
+      selectedModel,
+      selectedModelOptionsForDispatch,
+    );
+    return selectedCredentialMode === "automatic"
+      ? { ...selection, credentialMode: "automatic" }
+      : selection;
+  }, [selectedCredentialMode, selectedInstanceId, selectedModel, selectedModelOptionsForDispatch]);
   const selectedModelForPicker = selectedModel;
   // Instance-keyed option list so the picker can show each configured
   // instance (built-in + custom) as a first-class sidebar entry. The
@@ -3852,6 +3871,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       ) : null}
       <ProviderModelPicker
         isComposerOwned
+        showActiveInstanceName
         compact={composerControlsCompact}
         activeInstanceId={selectedInstanceId}
         model={selectedModelForPickerWithCustomFallback}
@@ -3886,6 +3906,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         getModelDisabledReason={getModelDisabledReason}
         onInstanceModelChange={onProviderModelSelect}
         onOpenProviderSetup={onOpenProviderSetup}
+      />
+
+      <AutoSwitchControl
+        instanceId={selectedInstanceId}
+        entries={providerInstanceEntries}
+        enabled={selectedCredentialMode === "automatic"}
+        saving={isCredentialModeSaving}
+        onChange={onCredentialModeChange}
       />
 
       {composerControlsCompact ? (
