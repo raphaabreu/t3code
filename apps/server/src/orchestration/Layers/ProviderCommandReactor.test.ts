@@ -68,6 +68,10 @@ import {
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import {
+  AutomaticCredentialSelector,
+  type AutomaticCredentialSelectorShape,
+} from "../Services/AutomaticCredentialSelector.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -187,6 +191,7 @@ describe("ProviderCommandReactor", () => {
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderServiceError>;
     readonly tryHandlePromptCommandEffect?: ProviderAuthService["Service"]["tryHandlePromptCommand"];
+    readonly automaticCredentialResolve?: AutomaticCredentialSelectorShape["resolve"];
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -450,6 +455,9 @@ describe("ProviderCommandReactor", () => {
         } satisfies OrchestrationEngineService["Service"];
       }),
     ).pipe(Layer.provide(orchestrationLayer));
+    const automaticCredentialResolve = vi.fn(
+      input?.automaticCredentialResolve ?? (({ selection }) => Effect.succeed(selection)),
+    );
     const layer = ProviderCommandReactorLive.pipe(
       Layer.provideMerge(reactorOrchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
@@ -482,6 +490,13 @@ describe("ProviderCommandReactor", () => {
       ),
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provideMerge(
+        Layer.succeed(AutomaticCredentialSelector, {
+          resolve: automaticCredentialResolve,
+          markUnavailable: () => Effect.void,
+          isUnavailable: () => Effect.succeed(false),
+        }),
+      ),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -612,6 +627,7 @@ describe("ProviderCommandReactor", () => {
       generateBranchName,
       generateThreadTitle,
       runtimeSessions,
+      automaticCredentialResolve,
       stateDir,
       drain,
       runEffect,
@@ -1183,6 +1199,109 @@ describe("ProviderCommandReactor", () => {
       expect(runningThread?.session?.status).toBe("running");
     }),
   );
+  it("keeps the automatically selected credential sticky across normal turns", async () => {
+    const automaticSelection: ModelSelection = {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5-codex",
+      credentialMode: "automatic",
+    };
+    const selectedInstanceId = ProviderInstanceId.make("codex_personal");
+    const harness = await createHarness({
+      threadModelSelection: automaticSelection,
+      automaticCredentialResolve: ({ selection }) =>
+        Effect.succeed({
+          ...selection,
+          instanceId: selectedInstanceId,
+        }),
+    });
+
+    for (const index of [1, 2]) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(`cmd-auto-sticky-${index}`),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId(`auto-sticky-message-${index}`),
+            role: "user",
+            text: `turn ${index}`,
+            attachments: [],
+          },
+          ...(index === 1 ? { modelSelection: automaticSelection } : {}),
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      await harness.drain();
+    }
+
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
+    expect(harness.sendTurn).toHaveBeenCalledTimes(2);
+    expect(harness.automaticCredentialResolve).toHaveBeenCalledTimes(2);
+    expect(harness.automaticCredentialResolve.mock.calls[1]?.[0].selection.instanceId).toBe(
+      selectedInstanceId,
+    );
+  });
+
+  effectIt.effect(
+    "uses updated session auto-switch policy on a follow-up without a model selection",
+    () =>
+      Effect.gen(function* () {
+        const selectionsResolved = [yield* Deferred.make<void>(), yield* Deferred.make<void>()];
+        let nextSelection = 0;
+        const harness = yield* Effect.promise(() =>
+          createHarness({
+            threadModelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: "gpt-5-codex",
+              credentialMode: "automatic",
+            },
+            automaticCredentialResolve: ({ selection }) =>
+              Deferred.succeed(selectionsResolved[nextSelection++]!, undefined).pipe(
+                Effect.as(selection),
+              ),
+          }),
+        );
+        const threadId = ThreadId.make("thread-1");
+
+        for (const index of [1, 2]) {
+          if (index === 2) {
+            yield* harness.engine.dispatch({
+              type: "thread.meta.update",
+              commandId: CommandId.make("cmd-disable-cached-auto-policy"),
+              threadId,
+              credentialMode: null,
+            });
+          }
+          yield* harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(`cmd-cached-auto-policy-${index}`),
+            threadId,
+            message: {
+              messageId: asMessageId(`cached-auto-policy-message-${index}`),
+              role: "user",
+              text: `turn ${index}`,
+              attachments: [],
+            },
+            runtimeMode: "approval-required",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            createdAt: "2026-01-01T00:00:00.000Z",
+          });
+          yield* Deferred.await(selectionsResolved[index - 1]!);
+          yield* Effect.promise(() => harness.drain());
+        }
+
+        expect(harness.sendTurn).toHaveBeenCalledTimes(2);
+        expect(harness.automaticCredentialResolve.mock.calls[0]?.[0].selection.credentialMode).toBe(
+          "automatic",
+        );
+        expect(
+          harness.automaticCredentialResolve.mock.calls[1]?.[0].selection.credentialMode,
+        ).toBeUndefined();
+      }),
+  );
+
   effectIt.effect("projects starting before a slow provider session finishes", () =>
     Effect.gen(function* () {
       const releaseStart = yield* Deferred.make<void>();
@@ -2694,67 +2813,76 @@ describe("ProviderCommandReactor", () => {
     expect(harness.stopSession.mock.calls.length).toBe(0);
   });
 
-  it("restarts an existing Codex thread on a compatible requested instance", async () => {
-    const harness = await createHarness();
-    const now = "2026-01-01T00:00:00.000Z";
+  it.each([undefined, "automatic"] as const)(
+    "switches compatible accounts while preserving %s credential mode",
+    async (credentialMode) => {
+      const harness = await createHarness();
+      const now = "2026-01-01T00:00:00.000Z";
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-compatible-codex-1"),
-        threadId: ThreadId.make("thread-1"),
-        message: {
-          messageId: asMessageId("user-message-compatible-codex-1"),
-          role: "user",
-          text: "first",
-          attachments: [],
-        },
-        modelSelection: {
-          instanceId: ProviderInstanceId.make("codex"),
-          model: "gpt-5-codex",
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: now,
-      }),
-    );
+      await harness.runEffect(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-compatible-codex-1"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-compatible-codex-1"),
+            role: "user",
+            text: "first",
+            attachments: [],
+          },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+            ...(credentialMode ? { credentialMode } : {}),
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
 
-    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      await harness.drain();
 
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.start",
-        commandId: CommandId.make("cmd-turn-start-compatible-codex-2"),
-        threadId: ThreadId.make("thread-1"),
-        message: {
-          messageId: asMessageId("user-message-compatible-codex-2"),
-          role: "user",
-          text: "second",
-          attachments: [],
-        },
-        modelSelection: {
-          instanceId: ProviderInstanceId.make("codex_work"),
-          model: "gpt-5-codex",
-        },
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        createdAt: "2026-01-01T00:00:00.000Z",
-      }),
-    );
+      await harness.runEffect(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-compatible-codex-2"),
+          threadId: ThreadId.make("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-compatible-codex-2"),
+            role: "user",
+            text: "second",
+            attachments: [],
+          },
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex_work"),
+            model: "gpt-5-codex",
+            ...(credentialMode ? { credentialMode } : {}),
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
 
-    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+      await harness.drain();
 
-    expect(harness.startSession).toHaveBeenCalledTimes(2);
-    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
-      provider: ProviderDriverKind.make("codex"),
-      providerInstanceId: ProviderInstanceId.make("codex_work"),
-      resumeCursor: { opaque: "resume-1" },
-    });
+      expect(harness.startSession).toHaveBeenCalledTimes(2);
+      expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex_work"),
+        resumeCursor: { opaque: "resume-1" },
+      });
 
-    const readModel = await harness.readModel();
-    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
-    expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_work"));
-  });
+      const readModel = await harness.readModel();
+      const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+      expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_work"));
+      expect(thread?.modelSelection.credentialMode).toBe(credentialMode);
+      expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
+        modelSelection: { instanceId: ProviderInstanceId.make("codex_work") },
+      });
+    },
+  );
 
   it("restarts the provider session when the thread workspace changes", async () => {
     const harness = await createHarness({

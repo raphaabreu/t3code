@@ -440,6 +440,18 @@ function resultErrorsText(result: SDKResultMessage): string {
  * so they must never become the error banner.
  */
 function resultUserFacingError(result: SDKResultMessage): string | undefined {
+  if (
+    isClaudeApiErrorResult(result) &&
+    !isOverloadedResult(result) &&
+    result.subtype === "success"
+  ) {
+    const resultMessage = result.result.trim();
+    if (resultMessage.length > 0) return resultMessage;
+
+    if (typeof result.api_error_status === "number")
+      return `Claude API request failed (HTTP ${result.api_error_status}).`;
+    if (result.terminal_reason === undefined) return "Claude API request failed.";
+  }
   const listed =
     result.subtype === "success" || !Array.isArray(result.errors)
       ? undefined
@@ -479,6 +491,18 @@ function resultUserFacingError(result: SDKResultMessage): string | undefined {
     default:
       return undefined;
   }
+}
+
+function isClaudeApiErrorResult(result: SDKResultMessage): boolean {
+  if (result.subtype !== "success") return false;
+
+  // Claude can report an API failure in a `subtype: "success"` envelope.
+  // The structured fields, not the envelope subtype, are authoritative.
+  return (
+    result.is_error === true ||
+    (typeof result.api_error_status === "number" && result.api_error_status >= 400) ||
+    String(result.terminal_reason) === "api_error"
+  );
 }
 
 function isInterruptedResult(result: SDKResultMessage): boolean {
@@ -1591,23 +1615,15 @@ function isOverloadedResult(result: SDKResultMessage): boolean {
 
 function turnStatusFromResult(result: SDKResultMessage): ProviderRuntimeTurnStatus {
   if (
+    isClaudeApiErrorResult(result) ||
     isOverloadedResult(result) ||
     (result.terminal_reason !== undefined && FAILED_TERMINAL_REASONS.has(result.terminal_reason))
   ) {
     return "failed";
   }
-  if (result.subtype === "success") {
-    return "completed";
-  }
-
-  const errors = resultErrorsText(result);
-  if (isInterruptedResult(result)) {
-    return "interrupted";
-  }
-  if (errors.includes("cancel")) {
-    return "cancelled";
-  }
-  return "failed";
+  if (isInterruptedResult(result)) return "interrupted";
+  if (result.subtype === "success") return "completed";
+  return resultErrorsText(result).includes("cancel") ? "cancelled" : "failed";
 }
 
 function streamKindFromDeltaType(deltaType: string): ClaudeTextStreamKind {

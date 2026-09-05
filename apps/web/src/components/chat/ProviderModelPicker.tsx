@@ -1,5 +1,6 @@
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
+  PROVIDER_DISPLAY_NAMES,
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ResolvedKeybindingsConfig,
@@ -44,6 +45,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   size?: ComposerControlSize;
   compact?: boolean;
   isComposerOwned?: boolean;
+  showActiveInstanceName?: boolean;
   disabled?: boolean;
   terminalOpen?: boolean;
   open?: boolean;
@@ -90,6 +92,14 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     : triggerTitle;
   const showInstanceBadge =
     activeEntry !== null && shouldShowInstanceBadge(activeEntry, props.instanceEntries);
+  const activeInstanceProfileName = (() => {
+    if (!activeEntry) return null;
+    const providerName = PROVIDER_DISPLAY_NAMES[activeEntry.driverKind];
+    const providerPrefix = providerName ? `${providerName} · ` : null;
+    return providerPrefix && activeEntry.displayName.startsWith(providerPrefix)
+      ? activeEntry.displayName.slice(providerPrefix.length)
+      : activeEntry.displayName;
+  })();
 
   const setIsMenuOpen = (open: boolean) => {
     props.onOpenChange?.(open);
@@ -172,7 +182,13 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             data-chat-provider-model-picker="true"
             className={cn(
               "min-w-0 justify-between whitespace-nowrap",
-              props.compact ? "max-w-42 shrink-0" : "max-w-48 shrink sm:max-w-56",
+              props.showActiveInstanceName
+                ? props.compact
+                  ? "max-w-80 shrink-0"
+                  : "max-w-[28rem] shrink sm:max-w-[32rem]"
+                : props.compact
+                  ? "max-w-42 shrink-0"
+                  : "max-w-48 shrink sm:max-w-56",
               props.triggerClassName,
             )}
             disabled={props.disabled}
@@ -213,6 +229,17 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           {selectedModel?.isUnavailable ? (
             <Badge variant="outline" size="sm">
               Unavailable
+            </Badge>
+          ) : null}
+          {props.showActiveInstanceName && activeEntry ? (
+            <Badge
+              variant="secondary"
+              size="sm"
+              className="min-w-0 max-w-64 shrink"
+              data-chat-provider-profile-name="true"
+              title={activeEntry.displayName}
+            >
+              <span className="truncate">{activeInstanceProfileName}</span>
             </Badge>
           ) : null}
         </span>

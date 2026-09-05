@@ -41,6 +41,9 @@ import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 
+import { threadEnvironment } from "../../state/threads";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
 import { ComposerAttachmentButton } from "../../components/ComposerAttachmentButton";
 import {
@@ -461,6 +464,27 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     voiceInput.blocksSubmission,
   ]);
 
+  const updateMetadata = useAtomCommand(threadEnvironment.updateMetadata);
+  const [isCredentialModeSaving, setIsCredentialModeSaving] = useState(false);
+  const autoSwitchEnabled = props.selectedThread.modelSelection.credentialMode === "automatic";
+  const currentProvider = props.serverConfig?.providers.find(
+    (provider) => provider.instanceId === currentModelSelection.instanceId,
+  );
+  const supportsAutoSwitch =
+    currentProvider?.driver === "codex" || currentProvider?.driver === "claudeAgent";
+  const changeCredentialMode = async (enabled: boolean) => {
+    if (isCredentialModeSaving) return;
+    setIsCredentialModeSaving(true);
+    try {
+      await updateMetadata({
+        environmentId: props.environmentId,
+        input: { threadId: props.selectedThread.id, credentialMode: enabled ? "automatic" : null },
+      });
+    } finally {
+      setIsCredentialModeSaving(false);
+    }
+  };
+
   // ── Model menu ───────────────────────────────────────────
   const modelOptions = useMemo(
     () => buildModelOptions(props.serverConfig, currentModelSelection),
@@ -495,7 +519,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       providerInstanceId: currentModelSelection.instanceId,
       providerGroups: threadProviderGroups,
       selectedModel: currentModelSelection,
-      onSelectModel: (option) => props.onUpdateModelSelection(option.selection),
+      onSelectModel: (option) =>
+        props.onUpdateModelSelection({
+          ...option.selection,
+          ...(currentModelSelection.credentialMode
+            ? { credentialMode: currentModelSelection.credentialMode }
+            : {}),
+        }),
       optionDescriptors: providerOptionDescriptors,
       onUpdateOptionSelections: (options) =>
         props.onUpdateModelSelection({ ...currentModelSelection, options }),
@@ -717,6 +747,32 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   onStart={voiceInput.start}
                   onCancel={voiceInput.cancel}
                 />
+                {supportsAutoSwitch || autoSwitchEnabled ? (
+                  <Pressable
+                    accessibilityLabel="Auto-switch on limit"
+                    accessibilityRole="switch"
+                    accessibilityState={{
+                      checked: autoSwitchEnabled,
+                      busy: isCredentialModeSaving,
+                      disabled: isCredentialModeSaving || props.connectionState !== "connected",
+                    }}
+                    accessibilityHint="Switch to a compatible account when a usage limit interrupts the session."
+                    className={`size-11 items-center justify-center rounded-xl active:bg-subtle ${autoSwitchEnabled ? "bg-subtle-strong" : ""}`}
+                    style={{
+                      opacity:
+                        isCredentialModeSaving || props.connectionState !== "connected" ? 0.45 : 1,
+                    }}
+                    disabled={isCredentialModeSaving || props.connectionState !== "connected"}
+                    onPress={() => void changeCredentialMode(!autoSwitchEnabled)}
+                  >
+                    <SymbolView
+                      name={autoSwitchEnabled ? "bolt.fill" : "bolt.slash.fill"}
+                      size={18}
+                      tintColorClassName={autoSwitchEnabled ? "accent-icon" : "accent-icon-muted"}
+                      type="monochrome"
+                    />
+                  </Pressable>
+                ) : null}
                 {showStopAction ? (
                   <ComposerActionButton
                     accessibilityLabel="Stop agent"

@@ -7354,9 +7354,10 @@ export default function ChatView(props: ChatViewProps) {
     [activeThread, providerStatuses],
   );
 
+  const [isCredentialModeSaving, setIsCredentialModeSaving] = useState(false);
   const onProviderModelSelect = useCallback(
-    (instanceId: ProviderInstanceId, model: string) => {
-      if (!activeThread) return;
+    async (instanceId: ProviderInstanceId, model: string) => {
+      if (!activeThread || isCredentialModeSaving) return;
       // Look up the configured instance so model normalization and custom
       // model lookup stay scoped to that exact instance. Unknown instance ids
       // are rejected by returning early; the server remains authoritative too.
@@ -7393,9 +7394,15 @@ export default function ChatView(props: ChatViewProps) {
         scheduleComposerFocus();
         return;
       }
+      const currentSelection = composerRef.current?.getSendContext().selectedModelSelection;
+      const isExplicitAccountChange = currentSelection?.instanceId !== instanceId;
       const nextModelSelection: ModelSelection = {
         instanceId,
         model: resolvedModel,
+        ...((resolvedDriverKind === "codex" || resolvedDriverKind === "claudeAgent") &&
+        currentSelection?.credentialMode === "automatic"
+          ? { credentialMode: "automatic" as const }
+          : {}),
       };
       const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
         providers: providerStatuses,
@@ -7413,22 +7420,95 @@ export default function ChatView(props: ChatViewProps) {
         scheduleComposerFocus();
         return;
       }
+      // Save the requested account without changing the session failover policy.
+      if (
+        isExplicitAccountChange &&
+        isServerThread &&
+        activeThread.modelSelection.credentialMode === "automatic"
+      ) {
+        setIsCredentialModeSaving(true);
+        try {
+          const result = await updateThreadMetadata({
+            environmentId,
+            input: { threadId: activeThread.id, modelSelection: nextModelSelection },
+          });
+          if (result._tag === "Failure") {
+            if (!isAtomCommandInterrupted(result))
+              toastManager.add({
+                type: "error",
+                title: "Could not change account",
+                description: chatActionErrorMessage(squashAtomCommandFailure(result)),
+              });
+            return;
+          }
+        } finally {
+          setIsCredentialModeSaving(false);
+        }
+      }
       setComposerDraftModelSelection(
         scopeThreadRef(activeThread.environmentId, activeThread.id),
         nextModelSelection,
         { explicit: true },
       );
-      setStickyComposerModelSelection(nextModelSelection);
+      // A session preference must not become the default for unrelated new threads.
+      const { credentialMode: _credentialMode, ...stickySelection } = nextModelSelection;
+      setStickyComposerModelSelection(stickySelection);
       scheduleComposerFocus();
     },
     [
       activeThread,
+      environmentId,
+      isServerThread,
+      isCredentialModeSaving,
+      updateThreadMetadata,
       lockedProvider,
       scheduleComposerFocus,
       setComposerDraftModelSelection,
       setStickyComposerModelSelection,
       providerStatuses,
       settings,
+    ],
+  );
+  const onCredentialModeChange = useCallback(
+    async (mode: "automatic" | null) => {
+      if (!activeThread || isCredentialModeSaving) return;
+      if (isServerThread) {
+        setIsCredentialModeSaving(true);
+        try {
+          const result = await updateThreadMetadata({
+            environmentId,
+            input: { threadId: activeThread.id, credentialMode: mode },
+          });
+          if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+            toastManager.add({
+              type: "error",
+              title: "Could not save automatic account switching",
+              description: chatActionErrorMessage(squashAtomCommandFailure(result)),
+            });
+          }
+        } finally {
+          setIsCredentialModeSaving(false);
+        }
+        return;
+      }
+      const currentSelection = composerRef.current?.getSendContext().selectedModelSelection;
+      if (!currentSelection) return;
+      const { credentialMode: _credentialMode, ...fixedSelection } = currentSelection;
+      setComposerDraftModelSelection(
+        scopeThreadRef(activeThread.environmentId, activeThread.id),
+        mode === "automatic" ? { ...fixedSelection, credentialMode: "automatic" } : fixedSelection,
+        { explicit: true },
+      );
+      scheduleComposerFocus();
+    },
+    [
+      activeThread,
+      environmentId,
+      isServerThread,
+      isCredentialModeSaving,
+      updateThreadMetadata,
+      scheduleComposerFocus,
+      setComposerDraftModelSelection,
     ],
   );
   const onEnvModeChange = useCallback(
@@ -8012,6 +8092,8 @@ export default function ChatView(props: ChatViewProps) {
                             }
                             onProviderModelSelect={onProviderModelSelect}
                             onOpenProviderSetup={openProviderSetup}
+                            onCredentialModeChange={onCredentialModeChange}
+                            isCredentialModeSaving={isCredentialModeSaving}
                             getModelDisabledReason={getModelDisabledReason}
                             toggleInteractionMode={toggleInteractionMode}
                             handleRuntimeModeChange={handleRuntimeModeChange}

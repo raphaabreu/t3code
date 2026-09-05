@@ -97,6 +97,8 @@ const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 const codexInstanceId = ProviderInstanceId.make("codex");
 const claudeAgentInstanceId = ProviderInstanceId.make("claudeAgent");
+const claudeWorkInstanceId = ProviderInstanceId.make("claude_work");
+const claudeIsolatedInstanceId = ProviderInstanceId.make("claude_isolated");
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
@@ -413,14 +415,60 @@ function makeProviderServiceLayer(
 ) {
   const codex = makeFakeCodexAdapter(CODEX_DRIVER, input.supportsConversationRollback);
   const claude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+  const claudeWork = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+  const claudeIsolated = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
   const cursor = makeFakeCodexAdapter(CURSOR_DRIVER);
-  const registry =
-    input.registry ??
-    makeAdapterRegistryMock({
-      [ProviderDriverKind.make("codex")]: codex.adapter,
-      [ProviderDriverKind.make("claudeAgent")]: claude.adapter,
-      [ProviderDriverKind.make("cursor")]: cursor.adapter,
-    });
+  const registryBase = makeAdapterRegistryMock({
+    [ProviderDriverKind.make("codex")]: codex.adapter,
+    [ProviderDriverKind.make("claudeAgent")]: claude.adapter,
+    [ProviderDriverKind.make("cursor")]: cursor.adapter,
+  });
+  const registry: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"] = input.registry ?? {
+    ...registryBase,
+    getByInstance: (instanceId) =>
+      instanceId === claudeWorkInstanceId
+        ? Effect.succeed(claudeWork.adapter)
+        : instanceId === claudeIsolatedInstanceId
+          ? Effect.succeed(claudeIsolated.adapter)
+          : registryBase.getByInstance(instanceId),
+    getInstanceInfo: (instanceId) => {
+      if (instanceId === claudeAgentInstanceId || instanceId === claudeWorkInstanceId) {
+        return Effect.succeed({
+          instanceId,
+          driverKind: CLAUDE_AGENT_DRIVER,
+          displayName: undefined,
+          enabled: true,
+          continuationIdentity: {
+            driverKind: CLAUDE_AGENT_DRIVER,
+            continuationKey: "claude:home:/shared-claude",
+          },
+        });
+      }
+      if (instanceId === claudeIsolatedInstanceId) {
+        return Effect.succeed({
+          instanceId,
+          driverKind: CLAUDE_AGENT_DRIVER,
+          displayName: undefined,
+          enabled: true,
+          continuationIdentity: {
+            driverKind: CLAUDE_AGENT_DRIVER,
+            continuationKey: "claude:home:/isolated-claude",
+          },
+        });
+      }
+      return registryBase.getInstanceInfo(instanceId);
+    },
+    listInstances: () =>
+      registryBase
+        .listInstances()
+        .pipe(
+          Effect.map((instanceIds) => [
+            ...instanceIds,
+            claudeWorkInstanceId,
+            claudeIsolatedInstanceId,
+          ]),
+        ),
+  };
 
   const providerAdapterLayer = Layer.succeed(
     ProviderAdapterRegistry.ProviderAdapterRegistry,
@@ -460,6 +508,8 @@ function makeProviderServiceLayer(
   return {
     codex,
     claude,
+    claudeWork,
+    claudeIsolated,
     cursor,
     layer,
   };
@@ -2129,6 +2179,106 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.providerInstanceId, claudeAgentInstanceId);
         assert.equal(startPayload.cwd, fixtureCwd("project-claude"));
       }
+    }),
+  );
+
+  it.effect("releases the shared session writer before starting a compatible account", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-compatible-active-switch");
+      const initial = yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId,
+        cwd: fixtureCwd("project-compatible-active-switch"),
+        runtimeMode: "full-access",
+      });
+      const startReplacement = routing.claudeWork.startSession.getMockImplementation()!;
+      routing.claudeWork.startSession.mockImplementationOnce((input) =>
+        Effect.gen(function* () {
+          assert.equal(yield* routing.claude.hasSession(threadId), false);
+          assert.deepEqual(input.resumeCursor, initial.resumeCursor);
+          return yield* startReplacement(input);
+        }),
+      );
+      const replacement = yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeWorkInstanceId,
+        threadId,
+        cwd: fixtureCwd("project-compatible-active-switch"),
+        runtimeMode: "full-access",
+      });
+      assert.equal(replacement.providerInstanceId, claudeWorkInstanceId);
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("resumes a stopped session on a compatible provider instance", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-compatible-stopped-switch");
+      const initial = yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId,
+        cwd: fixtureCwd("project-compatible-stopped-switch"),
+        runtimeMode: "full-access",
+      });
+
+      yield* provider.stopSession({ threadId });
+      routing.claudeWork.startSession.mockClear();
+
+      yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeWorkInstanceId,
+        threadId,
+        cwd: fixtureCwd("project-compatible-stopped-switch"),
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(routing.claudeWork.startSession.mock.calls.length, 1);
+      const resumedStartInput = routing.claudeWork.startSession.mock.calls[0]?.[0];
+      assert.equal(typeof resumedStartInput === "object" && resumedStartInput !== null, true);
+      if (resumedStartInput && typeof resumedStartInput === "object") {
+        const startPayload = resumedStartInput as {
+          providerInstanceId?: ProviderInstanceId;
+          resumeCursor?: unknown;
+        };
+        assert.equal(startPayload.providerInstanceId, claudeWorkInstanceId);
+        assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
+      }
+      yield* provider.stopSession({ threadId });
+    }),
+  );
+
+  it.effect("does not resume a stopped session on an incompatible provider instance", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const threadId = asThreadId("thread-incompatible-stopped-switch");
+      yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId,
+        cwd: fixtureCwd("project-incompatible-stopped-switch"),
+        runtimeMode: "full-access",
+      });
+
+      yield* provider.stopSession({ threadId });
+      routing.claudeIsolated.startSession.mockClear();
+
+      const switched = yield* provider
+        .startSession(threadId, {
+          provider: CLAUDE_AGENT_DRIVER,
+          providerInstanceId: claudeIsolatedInstanceId,
+          threadId,
+          cwd: fixtureCwd("project-incompatible-stopped-switch"),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.exit);
+
+      assert.equal(Exit.isFailure(switched), true);
+      assert.equal(routing.claudeIsolated.startSession.mock.calls.length, 0);
+      yield* provider.stopSession({ threadId });
     }),
   );
 
