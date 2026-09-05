@@ -25,7 +25,7 @@ import { scopedThreadKey } from "../../lib/scopedEntities";
 
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { ThemedSwitch } from "../../components/ThemedSwitch";
+import { SymbolView } from "../../components/AppSymbol";
 import { AppText as Text } from "../../components/AppText";
 import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
 import { GlassSurface } from "../../components/GlassSurface";
@@ -639,17 +639,30 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   onPress={openSettings}
                 />
                 {supportsAutoSwitch || autoSwitchEnabled ? (
-                  <View className="flex-row items-center gap-2 px-2">
-                    <Text className="text-xs text-foreground-muted">
-                      {isCredentialModeSaving ? "Saving…" : "Auto-switch on limit"}
-                    </Text>
-                    <ThemedSwitch
-                      accessibilityLabel="Auto-switch account on usage limit"
-                      value={autoSwitchEnabled}
-                      disabled={isCredentialModeSaving || props.connectionState !== "connected"}
-                      onValueChange={(enabled) => void changeCredentialMode(enabled)}
+                  <Pressable
+                    accessibilityLabel="Auto-switch on limit"
+                    accessibilityRole="switch"
+                    accessibilityState={{
+                      checked: autoSwitchEnabled,
+                      busy: isCredentialModeSaving,
+                      disabled: isCredentialModeSaving || props.connectionState !== "connected",
+                    }}
+                    accessibilityHint="Switch to a compatible account when a usage limit interrupts the session."
+                    className={`size-11 items-center justify-center rounded-xl active:bg-subtle ${autoSwitchEnabled ? "bg-subtle-strong" : ""}`}
+                    style={{
+                      opacity:
+                        isCredentialModeSaving || props.connectionState !== "connected" ? 0.45 : 1,
+                    }}
+                    disabled={isCredentialModeSaving || props.connectionState !== "connected"}
+                    onPress={() => void changeCredentialMode(!autoSwitchEnabled)}
+                  >
+                    <SymbolView
+                      name={autoSwitchEnabled ? "bolt.fill" : "bolt.slash.fill"}
+                      size={18}
+                      tintColorClassName={autoSwitchEnabled ? "accent-icon" : "accent-icon-muted"}
+                      type="monochrome"
                     />
-                  </View>
+                  </Pressable>
                 ) : null}
                 {showStopAction ? (
                   <ComposerToolbarButton

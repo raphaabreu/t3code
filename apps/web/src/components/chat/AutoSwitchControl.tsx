@@ -1,7 +1,8 @@
 import type { ProviderInstanceId } from "@t3tools/contracts";
 import type { ProviderInstanceEntry } from "../../providerInstances";
-import { Checkbox } from "../ui/checkbox";
+import { ZapIcon, ZapOffIcon } from "lucide-react";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { ComposerControl, ComposerControlIcon } from "./ComposerControl";
 
 /** Session policy stays visible independently of the model catalog. */
 export function AutoSwitchControl(props: {
@@ -16,21 +17,25 @@ export function AutoSwitchControl(props: {
   if (!supported && !props.enabled) return null;
   return (
     <Tooltip>
-      <TooltipTrigger
-        render={
-          <label className="flex shrink-0 items-center gap-1.5 px-2 text-xs text-muted-foreground" />
-        }
-      >
-        <Checkbox
-          checked={props.enabled}
+      <TooltipTrigger render={<span className="flex shrink-0" />}>
+        <ComposerControl
+          aria-label="Auto-switch on limit"
+          aria-pressed={props.enabled}
+          aria-busy={props.saving}
+          className="w-7 px-0 aria-pressed:bg-primary/10 aria-pressed:text-primary"
           disabled={props.saving}
-          onCheckedChange={(checked) => props.onChange(checked ? "automatic" : null)}
-        />
-        {props.saving ? "Saving…" : "Auto-switch on limit"}
+          onClick={() => props.onChange(props.enabled ? null : "automatic")}
+        >
+          <ComposerControlIcon
+            icon={props.enabled ? ZapIcon : ZapOffIcon}
+            className="text-current"
+          />
+        </ComposerControl>
       </TooltipTrigger>
       <TooltipPopup side="top">
-        Keep this model and account until a usage limit interrupts the session, then switch to a
-        compatible account and continue.
+        {props.saving
+          ? "Saving auto-switch setting…"
+          : `Auto-switch on limit: ${props.enabled ? "On" : "Off"}. Switch to a compatible account when a usage limit interrupts the session.`}
       </TooltipPopup>
     </Tooltip>
   );
