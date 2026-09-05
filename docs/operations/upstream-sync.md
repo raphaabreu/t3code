@@ -5,6 +5,11 @@ Keep fork features as small, independently reviewed commits. Use merge commits f
 syncs so Git retains the shared history; do not squash an upstream merge or repeatedly
 cherry-pick a long upstream series. Avoid rewriting published fork history.
 
+Rebase unpublished feature branches onto the updated `origin/main` after an upstream sync.
+Keep the shared fork's `main` history intact: rebasing it onto upstream would rewrite fork
+commits and require a coordinated force-push and checkout migration. Sync regularly in a
+dedicated integration branch so conflict resolution stays separate from feature changes.
+
 ## Inspect before integrating
 
 Fetch both heads and inspect divergence without changing a checkout:
