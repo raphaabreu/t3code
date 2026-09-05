@@ -39,7 +39,6 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   showActiveInstanceName?: boolean;
   disabled?: boolean;
   terminalOpen?: boolean;
-  credentialMode?: "automatic" | undefined;
   open?: boolean;
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"];
   triggerClassName?: string;
@@ -47,7 +46,6 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   onOpenChange?: (open: boolean) => void;
   getModelDisabledReason?: (instanceId: ProviderInstanceId, model: string) => string | null;
   onInstanceModelChange: (instanceId: ProviderInstanceId, model: string) => void;
-  onCredentialModeChange?: (mode: "automatic" | null) => void;
 }) {
   const [uncontrolledIsMenuOpen, setUncontrolledIsMenuOpen] = useState(false);
   const isMenuOpen = props.open ?? uncontrolledIsMenuOpen;
@@ -203,11 +201,6 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
               Unavailable
             </Badge>
           ) : null}
-          {props.credentialMode === "automatic" ? (
-            <Badge variant="outline" size="sm">
-              Auto
-            </Badge>
-          ) : null}
           {props.showActiveInstanceName && activeEntry ? (
             <Badge
               variant="secondary"
@@ -238,15 +231,11 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           {...(props.keybindings ? { keybindings: props.keybindings } : {})}
           modelOptionsByInstance={props.modelOptionsByInstance}
           terminalOpen={props.terminalOpen ?? false}
-          credentialMode={props.credentialMode}
           onRequestClose={() => setIsMenuOpen(false)}
           {...(props.getModelDisabledReason
             ? { getModelDisabledReason: props.getModelDisabledReason }
             : {})}
           onInstanceModelChange={handleInstanceModelChange}
-          {...(props.onCredentialModeChange
-            ? { onCredentialModeChange: props.onCredentialModeChange }
-            : {})}
         />
       </PopoverPopup>
     </Popover>

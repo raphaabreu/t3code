@@ -817,6 +817,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         thread.branch !== command.expectedBranch
           ? thread.branch
           : command.branch;
+      const selection = command.modelSelection ?? thread.modelSelection;
+      const { credentialMode: _credentialMode, ...fixedSelection } = selection;
+      const modelSelection =
+        command.credentialMode === undefined
+          ? command.modelSelection
+          : command.credentialMode === "automatic"
+            ? { ...selection, credentialMode: "automatic" as const }
+            : fixedSelection;
       const occurredAt = yield* nowIso;
       return {
         ...(yield* withEventBase({
@@ -842,9 +850,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.title !== undefined && thread.titleRegeneration != null
             ? { titleRegeneration: null }
             : {}),
-          ...(command.modelSelection !== undefined
-            ? { modelSelection: command.modelSelection }
-            : {}),
+          ...(modelSelection !== undefined ? { modelSelection } : {}),
           ...(branch !== undefined ? { branch } : {}),
           ...(command.worktreePath !== undefined ? { worktreePath: command.worktreePath } : {}),
           ...(command.linkedPullRequest !== undefined

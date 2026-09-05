@@ -54,7 +54,7 @@ describe("composer credential selection", () => {
     ).toBe(FIXED_INSTANCE);
   });
 
-  it("treats an explicit missing credential mode as turning automatic routing off", () => {
+  it("keeps the session policy when a model pick omits credential mode", () => {
     const automaticSelection = selection(AUTOMATIC_INSTANCE, "automatic");
     const fixedSelection = selection(AUTOMATIC_INSTANCE);
 
@@ -67,6 +67,37 @@ describe("composer credential selection", () => {
         },
         selectedInstanceId: AUTOMATIC_INSTANCE,
         threadModelSelection: automaticSelection,
+      }),
+    ).toBe("automatic");
+  });
+
+  it("uses the draft preference before creating a session", () => {
+    expect(
+      resolveComposerCredentialMode({
+        draft: {
+          activeProvider: AUTOMATIC_INSTANCE,
+          modelSelectionByProvider: {
+            [AUTOMATIC_INSTANCE]: selection(AUTOMATIC_INSTANCE, "automatic"),
+          },
+        },
+        selectedInstanceId: AUTOMATIC_INSTANCE,
+        threadModelSelection: null,
+      }),
+    ).toBe("automatic");
+  });
+
+  it("reflects disabling auto-switch from another device despite a stale draft", () => {
+    expect(
+      resolveComposerCredentialMode({
+        draft: {
+          activeProvider: AUTOMATIC_INSTANCE,
+          modelSelectionByProvider: {
+            [AUTOMATIC_INSTANCE]: selection(AUTOMATIC_INSTANCE, "automatic"),
+          },
+          modelSelectionExplicit: true,
+        },
+        selectedInstanceId: AUTOMATIC_INSTANCE,
+        threadModelSelection: selection(AUTOMATIC_INSTANCE),
       }),
     ).toBeUndefined();
   });

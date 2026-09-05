@@ -44,19 +44,8 @@ export function resolveComposerCredentialMode(input: {
   readonly selectedInstanceId: ProviderInstanceId;
   readonly threadModelSelection: ModelSelection | null | undefined;
 }): ModelSelection["credentialMode"] {
-  const draftSelection = input.draft.modelSelectionByProvider[input.selectedInstanceId];
-  const explicitDraftSelectionIsAuthoritative =
-    input.draft.modelSelectionExplicit === true &&
-    input.draft.activeProvider === input.selectedInstanceId;
-
-  if (explicitDraftSelectionIsAuthoritative) {
-    return draftSelection?.credentialMode;
-  }
-
-  return (
-    draftSelection?.credentialMode ??
-    (input.threadModelSelection?.instanceId === input.selectedInstanceId
-      ? input.threadModelSelection.credentialMode
-      : undefined)
-  );
+  // Persisted session policy is authoritative across devices and account switches.
+  // Drafts own the preference only until the thread is created.
+  if (input.threadModelSelection) return input.threadModelSelection.credentialMode;
+  return input.draft.modelSelectionByProvider[input.selectedInstanceId]?.credentialMode;
 }

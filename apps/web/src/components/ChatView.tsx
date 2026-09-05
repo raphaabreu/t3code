@@ -6719,9 +6719,10 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThread, providerStatuses],
   );
 
+  const [isCredentialModeSaving, setIsCredentialModeSaving] = useState(false);
   const onProviderModelSelect = useCallback(
-    (instanceId: ProviderInstanceId, model: string) => {
-      if (!activeThread) return;
+    async (instanceId: ProviderInstanceId, model: string) => {
+      if (!activeThread || isCredentialModeSaving) return;
       // Look up the configured instance so model normalization and custom
       // model lookup stay scoped to that exact instance. Unknown instance ids
       // are rejected by returning early; the server remains authoritative too.
@@ -6758,9 +6759,16 @@ function ChatViewContent(props: ChatViewProps) {
         scheduleComposerFocus();
         return;
       }
+      const currentSelection = composerRef.current?.getSendContext().selectedModelSelection;
+      const isExplicitAccountChange = currentSelection?.instanceId !== instanceId;
       const nextModelSelection: ModelSelection = {
         instanceId,
         model: resolvedModel,
+        ...(!isExplicitAccountChange &&
+        (resolvedDriverKind === "codex" || resolvedDriverKind === "claudeAgent") &&
+        currentSelection?.credentialMode === "automatic"
+          ? { credentialMode: "automatic" as const }
+          : {}),
       };
       const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
         providers: providerStatuses,
@@ -6778,16 +6786,48 @@ function ChatViewContent(props: ChatViewProps) {
         scheduleComposerFocus();
         return;
       }
+      // An explicit account pick opts out of routing, as it did in the picker.
+      // Save that choice now so the session and the separate checkbox agree.
+      if (
+        isExplicitAccountChange &&
+        isServerThread &&
+        activeThread.modelSelection.credentialMode === "automatic"
+      ) {
+        setIsCredentialModeSaving(true);
+        try {
+          const result = await updateThreadMetadata({
+            environmentId,
+            input: { threadId: activeThread.id, credentialMode: null },
+          });
+          if (result._tag === "Failure") {
+            if (!isAtomCommandInterrupted(result))
+              toastManager.add({
+                type: "error",
+                title: "Could not change account",
+                description: chatActionErrorMessage(squashAtomCommandFailure(result)),
+              });
+            return;
+          }
+        } finally {
+          setIsCredentialModeSaving(false);
+        }
+      }
       setComposerDraftModelSelection(
         scopeThreadRef(activeThread.environmentId, activeThread.id),
         nextModelSelection,
         { explicit: true },
       );
-      setStickyComposerModelSelection(nextModelSelection);
+      // A session preference must not become the default for unrelated new threads.
+      const { credentialMode: _credentialMode, ...stickySelection } = nextModelSelection;
+      setStickyComposerModelSelection(stickySelection);
       scheduleComposerFocus();
     },
     [
       activeThread,
+      environmentId,
+      isServerThread,
+      isCredentialModeSaving,
+      updateThreadMetadata,
       lockedProvider,
       scheduleComposerFocus,
       setComposerDraftModelSelection,
@@ -6797,32 +6837,45 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
   const onCredentialModeChange = useCallback(
-    (mode: "automatic" | null) => {
-      if (!activeThread) return;
+    async (mode: "automatic" | null) => {
+      if (!activeThread || isCredentialModeSaving) return;
+      if (isServerThread) {
+        setIsCredentialModeSaving(true);
+        try {
+          const result = await updateThreadMetadata({
+            environmentId,
+            input: { threadId: activeThread.id, credentialMode: mode },
+          });
+          if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+            toastManager.add({
+              type: "error",
+              title: "Could not save automatic account switching",
+              description: chatActionErrorMessage(squashAtomCommandFailure(result)),
+            });
+          }
+        } finally {
+          setIsCredentialModeSaving(false);
+        }
+        return;
+      }
       const currentSelection = composerRef.current?.getSendContext().selectedModelSelection;
       if (!currentSelection) return;
-      const nextModelSelection: ModelSelection =
-        mode === "automatic"
-          ? { ...currentSelection, credentialMode: "automatic" }
-          : {
-              instanceId: currentSelection.instanceId,
-              model: currentSelection.model,
-              ...(currentSelection.options ? { options: currentSelection.options } : {}),
-            };
+      const { credentialMode: _credentialMode, ...fixedSelection } = currentSelection;
       setComposerDraftModelSelection(
         scopeThreadRef(activeThread.environmentId, activeThread.id),
-        nextModelSelection,
+        mode === "automatic" ? { ...fixedSelection, credentialMode: "automatic" } : fixedSelection,
         { explicit: true },
       );
-      setStickyComposerModelSelection(nextModelSelection);
       scheduleComposerFocus();
     },
     [
       activeThread,
-      composerRef,
+      environmentId,
+      isServerThread,
+      isCredentialModeSaving,
+      updateThreadMetadata,
       scheduleComposerFocus,
       setComposerDraftModelSelection,
-      setStickyComposerModelSelection,
     ],
   );
   const onEnvModeChange = useCallback(
@@ -7342,6 +7395,7 @@ function ChatViewContent(props: ChatViewProps) {
                             }
                             onProviderModelSelect={onProviderModelSelect}
                             onCredentialModeChange={onCredentialModeChange}
+                            isCredentialModeSaving={isCredentialModeSaving}
                             getModelDisabledReason={getModelDisabledReason}
                             toggleInteractionMode={toggleInteractionMode}
                             handleRuntimeModeChange={handleRuntimeModeChange}

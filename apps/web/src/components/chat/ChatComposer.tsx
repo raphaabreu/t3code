@@ -123,6 +123,7 @@ import {
   shouldUseCompactComposerFooter,
 } from "../composerFooterLayout";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
+import { AutoSwitchControl } from "./AutoSwitchControl";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
@@ -679,6 +680,7 @@ export interface ChatComposerProps {
 
   onProviderModelSelect: (instanceId: ProviderInstanceId, model: string) => void;
   onCredentialModeChange: (mode: "automatic" | null) => void;
+  isCredentialModeSaving: boolean;
   getModelDisabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
   toggleInteractionMode: () => void;
   handleRuntimeModeChange: (mode: RuntimeMode) => void;
@@ -707,7 +709,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadId,
     activeThreadEnvironmentId: _activeThreadEnvironmentId,
     activeThread,
-    isServerThread: _isServerThread,
+    isServerThread,
     isLocalDraftThread: _isLocalDraftThread,
     forceExpandedOnMobile,
     projectSelectionRequired,
@@ -760,6 +762,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onChangeActivePendingUserInputCustomAnswer,
     onProviderModelSelect,
     onCredentialModeChange,
+    isCredentialModeSaving,
     getModelDisabledReason,
     toggleInteractionMode,
     handleRuntimeModeChange,
@@ -1107,7 +1110,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const selectedCredentialMode = resolveComposerCredentialMode({
     draft: composerDraft,
     selectedInstanceId,
-    threadModelSelection: activeThreadModelSelection,
+    threadModelSelection: isServerThread ? activeThreadModelSelection : null,
   });
   const selectedModelSelection = useMemo<ModelSelection>(() => {
     const selection = createModelSelection(
@@ -4007,9 +4010,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       showActiveInstanceName
                       triggerClassName="-ms-2.5"
                       terminalOpen={terminalOpen}
-                      {...(selectedCredentialMode === "automatic"
-                        ? { credentialMode: "automatic" as const }
-                        : {})}
                       open={isComposerModelPickerOpen}
                       {...(composerProviderState.modelPickerIconClassName
                         ? {
@@ -4022,9 +4022,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       }}
                       getModelDisabledReason={getModelDisabledReason}
                       onInstanceModelChange={onProviderModelSelect}
-                      onCredentialModeChange={onCredentialModeChange}
                     />
                   )}
+
+                  <AutoSwitchControl
+                    instanceId={selectedInstanceId}
+                    entries={providerInstanceEntries}
+                    enabled={selectedCredentialMode === "automatic"}
+                    saving={isCredentialModeSaving}
+                    onChange={onCredentialModeChange}
+                  />
 
                   {isComposerFooterCompact ? (
                     <CompactComposerControlsMenu

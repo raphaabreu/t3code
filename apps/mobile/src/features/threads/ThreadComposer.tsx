@@ -23,6 +23,9 @@ import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 
+import { threadEnvironment } from "../../state/threads";
+import { useAtomCommand } from "../../state/use-atom-command";
+import { ThemedSwitch } from "../../components/ThemedSwitch";
 import { AppText as Text } from "../../components/AppText";
 import { ComposerAttachmentStrip } from "../../components/ComposerAttachmentStrip";
 import { GlassSurface } from "../../components/GlassSurface";
@@ -349,6 +352,27 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     props.selectedThread.title,
   ]);
 
+  const updateMetadata = useAtomCommand(threadEnvironment.updateMetadata);
+  const [isCredentialModeSaving, setIsCredentialModeSaving] = useState(false);
+  const autoSwitchEnabled = props.selectedThread.modelSelection.credentialMode === "automatic";
+  const currentProvider = props.serverConfig?.providers.find(
+    (provider) => provider.instanceId === currentModelSelection.instanceId,
+  );
+  const supportsAutoSwitch =
+    currentProvider?.driver === "codex" || currentProvider?.driver === "claudeAgent";
+  const changeCredentialMode = async (enabled: boolean) => {
+    if (isCredentialModeSaving) return;
+    setIsCredentialModeSaving(true);
+    try {
+      await updateMetadata({
+        environmentId: props.environmentId,
+        input: { threadId: props.selectedThread.id, credentialMode: enabled ? "automatic" : null },
+      });
+    } finally {
+      setIsCredentialModeSaving(false);
+    }
+  };
+
   // ── Model menu ───────────────────────────────────────────
   const modelOptions = useMemo(
     () => buildModelOptions(props.serverConfig, currentModelSelection),
@@ -382,7 +406,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
       environmentId: props.environmentId,
       providerGroups: threadProviderGroups,
       selectedModel: currentModelSelection,
-      onSelectModel: (option) => props.onUpdateModelSelection(option.selection),
+      onSelectModel: (option) =>
+        props.onUpdateModelSelection({
+          ...option.selection,
+          ...(currentModelSelection.credentialMode
+            ? { credentialMode: currentModelSelection.credentialMode }
+            : {}),
+        }),
       optionDescriptors: providerOptionDescriptors,
       onUpdateOptionSelections: (options) =>
         props.onUpdateModelSelection({ ...currentModelSelection, options }),
@@ -608,6 +638,19 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   maxWidth={152}
                   onPress={openSettings}
                 />
+                {supportsAutoSwitch || autoSwitchEnabled ? (
+                  <View className="flex-row items-center gap-2 px-2">
+                    <Text className="text-xs text-foreground-muted">
+                      {isCredentialModeSaving ? "Saving…" : "Auto-switch on limit"}
+                    </Text>
+                    <ThemedSwitch
+                      accessibilityLabel="Auto-switch account on usage limit"
+                      value={autoSwitchEnabled}
+                      disabled={isCredentialModeSaving || props.connectionState !== "connected"}
+                      onValueChange={(enabled) => void changeCredentialMode(enabled)}
+                    />
+                  </View>
+                ) : null}
                 {showStopAction ? (
                   <ComposerToolbarButton
                     accessibilityLabel="Stop"
