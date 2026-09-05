@@ -53,21 +53,21 @@ export const ClaudeExecutableFileCheck = Context.Reference<ExecutableFileCheck>(
  * `spawn EINVAL`. CLI probes avoid this via `resolveSpawnCommand`, which can
  * fall back to `shell: true`; the SDK offers no such escape hatch.
  *
- * On Windows this resolves the command against PATH/PATHEXT and, when the
- * result is an npm launcher shim, follows it to the real package entry
- * (`bin/claude.exe`, or `cli.js` for older package versions). On other
- * platforms the configured value is returned unchanged.
+ * This resolves the command against the provider's effective PATH on every
+ * platform. On Windows, when the result is an npm launcher shim, it follows
+ * the shim to the real package entry (`bin/claude.exe`, or `cli.js` for older
+ * package versions).
  */
 export const resolveClaudeSdkExecutablePath = Effect.fn("resolveClaudeSdkExecutablePath")(
   function* (binaryPath: string, environment: NodeJS.ProcessEnv): Effect.fn.Return<string> {
     const platform = yield* HostProcessPlatform;
+    const resolveExecutable = yield* SpawnExecutableResolution;
+    const resolved = resolveExecutable(binaryPath, platform, environment) ?? binaryPath;
     if (platform !== "win32") {
-      return binaryPath;
+      return resolved;
     }
 
-    const resolveExecutable = yield* SpawnExecutableResolution;
     const isFile = yield* ClaudeExecutableFileCheck;
-    const resolved = resolveExecutable(binaryPath, platform, environment) ?? binaryPath;
     const extension = NodePath.win32.extname(resolved).toLowerCase();
     if (!WINDOWS_SHIM_EXTENSIONS.has(extension)) {
       return resolved;
